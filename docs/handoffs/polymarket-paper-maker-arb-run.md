@@ -31,12 +31,12 @@ Important environment note: this machine has `python3`, but no `python` shim. Co
 
 ## Next
 
-Review the diagnostics smoke dashboard at `http://127.0.0.1:8766` and `data/runs/2026-05-01-diagnostics-smoke/summary.md`.
+Review the 30-minute expiry-60 dashboard at `http://127.0.0.1:8767` and `data/runs/2026-05-01-expiry60/summary.md`.
 
 Recommended next implementation slice:
 
-1. Run a longer paper session in a new directory only after reviewing the diagnostics smoke output.
-2. Use `--quote-expiry-seconds 60` or `--quote-mode best_bid` / `--quote-mode midpoint_when_spread_allows` for the next experiment, then compare the resulting `summary.md` against the smoke replay.
+1. Add per-market and per-outcome concentration controls before running longer sessions; the expiry-60 run concentrated 41 of 46 fills in two markets.
+2. Tighten adverse-selection accounting and market suitability scoring before making quotes more aggressive.
 3. Decide whether public trade-tape polling is worth adding as optional read-only evidence; current runs deliberately use book-move evidence only.
 
 Do not loosen fill rules just to create activity. The no-fill outcome is useful evidence when the report explains missed ticks, quote lifetime, market movement, and expiry sensitivity.
@@ -96,6 +96,14 @@ Run outputs, ignored by git:
 - `data/runs/2026-05-01-diagnostics-smoke/risk_events.jsonl`
 - `data/runs/2026-05-01-diagnostics-smoke/dashboard_state.json`
 - `data/runs/2026-05-01-diagnostics-smoke/summary.md`
+- `data/runs/2026-05-01-expiry60/markets.jsonl`
+- `data/runs/2026-05-01-expiry60/books.jsonl`
+- `data/runs/2026-05-01-expiry60/quotes.jsonl`
+- `data/runs/2026-05-01-expiry60/fills.jsonl`
+- `data/runs/2026-05-01-expiry60/arb_alerts.jsonl`
+- `data/runs/2026-05-01-expiry60/risk_events.jsonl`
+- `data/runs/2026-05-01-expiry60/dashboard_state.json`
+- `data/runs/2026-05-01-expiry60/summary.md`
 
 ## Checks
 
@@ -113,8 +121,11 @@ Passed:
 - `python3 -m polymarket_paper report --date 2026-05-01 --data-dir data/runs/2026-05-01-diagnostics-smoke --dashboard-url http://127.0.0.1:8766`
 - `python3 -m polymarket_paper run --help`
 - `python3 -m polymarket_paper run --minutes 10 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --quote-mode one_tick_inside --quote-expiry-seconds 30 --out-dir data/runs/2026-05-01-diagnostics-smoke --poll-seconds 30`
+- `python3 -m polymarket_paper run --minutes 30 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --quote-mode one_tick_inside --quote-expiry-seconds 60 --out-dir data/runs/2026-05-01-expiry60 --poll-seconds 30`
+- `python3 -m polymarket_paper report --date 2026-05-01 --data-dir data/runs/2026-05-01-expiry60 --dashboard-url http://127.0.0.1:8767`
 - `curl http://127.0.0.1:8765/state.json`
 - `curl http://127.0.0.1:8766/state.json`
+- `curl http://127.0.0.1:8767/state.json`
 - `curl http://127.0.0.1:8766/ | rg "Fill Opportunity|Policy Comparison|Polymarket Paper Desk"`
 - Headless Chrome screenshot of `http://127.0.0.1:8765`
 - Repo-wide guardrail scan found no live order, signing, wallet key, allowance, or private endpoint path.
@@ -165,6 +176,61 @@ Latest diagnostics smoke result:
   - `midpoint_when_spread_allows`: 2 plausible within-expiry fills, 117 longer-expiry opportunities, average 1.0 ticks missed.
 - Fill evidence model: `book_move_only`; public trade tape integration is deferred and logged.
 - Dashboard verified at `http://127.0.0.1:8766/state.json`; HTML includes Fill Opportunity and Policy Comparison panels.
+
+## Expiry-60 Run
+
+Command:
+
+`python3 -m polymarket_paper run --minutes 30 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --quote-mode one_tick_inside --quote-expiry-seconds 60 --out-dir data/runs/2026-05-01-expiry60 --poll-seconds 30`
+
+Report command:
+
+`python3 -m polymarket_paper report --date 2026-05-01 --data-dir data/runs/2026-05-01-expiry60 --dashboard-url http://127.0.0.1:8767`
+
+Result:
+
+- Completed.
+- Markets total: 100.
+- Markets watched: 11.
+- Markets skipped: 89.
+- Book events: 1,080.
+- Virtual quotes: 1,000.
+- Simulated fills: 46.
+- Denied fills: 0.
+- Risk events: 922.
+- Arbitrage alerts: 0.
+- Expired quotes: 703.
+- Missed by 1 tick: 644.
+- Missed by 2 ticks: 33.
+- Missed by more: 95.
+- Would have filled under longer expiry: 102.
+- Mark-to-mid PnL: 2.825.
+- Spread-capture PnL: 1.081528.
+- Inventory mark PnL: 1.743472.
+- Open exposure by market:
+  - `2090808`: 14.5.
+  - `2116590`: 11.9.
+  - `2074236`: 4.45.
+  - `2119381`: 0.02.
+- Fills by market:
+  - `2090808`: 23.
+  - `2116590`: 18.
+  - `2074236`: 4.
+  - `2119381`: 1.
+- All 46 fills had `evidence_event_id`.
+- Policy comparison over the same evidence:
+  - `best_bid`: 125 plausible within-expiry fills, 207 longer-expiry opportunities, average 1.534 ticks missed, 89 adverse-selection flags.
+  - `one_tick_inside`: 133 plausible within-expiry fills, 210 longer-expiry opportunities, average 1.405 ticks missed, 96 adverse-selection flags.
+  - `midpoint_when_spread_allows`: 133 plausible within-expiry fills, 210 longer-expiry opportunities, average 1.328 ticks missed, 96 adverse-selection flags.
+- Fill evidence model: `book_move_only`; public trade tape integration is deferred and logged.
+- Dashboard verified at `http://127.0.0.1:8767/state.json`.
+
+Interpretation:
+
+- Extending expiry from 30 seconds to 60 seconds created real paper fill activity: 46 fills versus 0 in the 10-minute expiry-30 smoke.
+- The run also introduced meaningful concentration and adverse-selection risk. Two markets produced 41 of 46 fills, and every quote policy was assessed as more aggressive on adverse-selection evidence.
+- Positive mark-to-mid PnL is useful but not conclusive because fees/rebates/rewards are unknown, one mark was missing during replay, and open inventory remains material.
+- Do not increase expiry again until per-market/outcome throttles and adverse-selection accounting are improved.
 
 Prior baseline smoke command:
 
@@ -226,3 +292,9 @@ URL:
 `http://127.0.0.1:8766`
 
 The dashboard server is running locally and reads from `data/runs/2026-05-01-diagnostics-smoke`. It is read-only over JSONL replay state.
+
+Current 30-minute dashboard:
+
+`http://127.0.0.1:8767`
+
+This dashboard reads from `data/runs/2026-05-01-expiry60`. It is read-only over JSONL replay state.
