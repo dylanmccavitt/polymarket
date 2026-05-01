@@ -88,6 +88,48 @@ class SimulatorTrustTests(unittest.TestCase):
         self.assertEqual(fills[0]["evidence_event_id"], "book-fill")
         self.assertEqual(fills[0]["reason"], "book_ask_traded_through_bid")
 
+    def test_market_fill_cap_denies_additional_bid_fills(self):
+        risk = RiskState(max_total_exposure=100, max_market_fills=1, max_token_fills=10)
+        sim = PaperSimulator(risk=risk, quote_size=5, quote_expiry_seconds=60)
+
+        sim.generate_quotes(snapshot(event_id="book-1"), now=NOW)
+        fills, _ = sim.process_snapshot(
+            snapshot(event_id="book-fill-1", best_bid=0.49, best_ask=0.5, midpoint=0.495, spread=0.01),
+            now=NOW + timedelta(seconds=5),
+        )
+        self.assertEqual(fills[0]["type"], "simulated_fill")
+
+        sim.generate_quotes(snapshot(event_id="book-2"), now=NOW + timedelta(seconds=6))
+        denied, _ = sim.process_snapshot(
+            snapshot(event_id="book-fill-2", best_bid=0.49, best_ask=0.5, midpoint=0.495, spread=0.01),
+            now=NOW + timedelta(seconds=10),
+        )
+
+        self.assertEqual(denied[0]["type"], "fill_denied")
+        self.assertEqual(denied[0]["reason"], "market_fill_cap")
+        self.assertEqual(denied[0]["evidence_event_id"], "book-fill-2")
+
+    def test_token_fill_cap_denies_additional_outcome_fills(self):
+        risk = RiskState(max_total_exposure=100, max_market_fills=10, max_token_fills=1)
+        sim = PaperSimulator(risk=risk, quote_size=5, quote_expiry_seconds=60)
+
+        sim.generate_quotes(snapshot(event_id="book-1"), now=NOW)
+        fills, _ = sim.process_snapshot(
+            snapshot(event_id="book-fill-1", best_bid=0.49, best_ask=0.5, midpoint=0.495, spread=0.01),
+            now=NOW + timedelta(seconds=5),
+        )
+        self.assertEqual(fills[0]["type"], "simulated_fill")
+
+        sim.generate_quotes(snapshot(event_id="book-2"), now=NOW + timedelta(seconds=6))
+        denied, _ = sim.process_snapshot(
+            snapshot(event_id="book-fill-2", best_bid=0.49, best_ask=0.5, midpoint=0.495, spread=0.01),
+            now=NOW + timedelta(seconds=10),
+        )
+
+        self.assertEqual(denied[0]["type"], "fill_denied")
+        self.assertEqual(denied[0]["reason"], "token_fill_cap")
+        self.assertEqual(denied[0]["evidence_event_id"], "book-fill-2")
+
     def test_quote_policy_variants_choose_distinct_maker_prices(self):
         wide = snapshot(best_bid=0.49, best_ask=0.53, midpoint=0.51, spread=0.04)
 

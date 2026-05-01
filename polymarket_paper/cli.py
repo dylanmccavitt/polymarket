@@ -27,6 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--quote-size", type=float, default=5.0)
     run.add_argument("--quote-mode", choices=QUOTE_MODES, default="one_tick_inside")
     run.add_argument("--quote-expiry-seconds", type=int, default=30)
+    run.add_argument("--max-fills-per-market", type=int, default=8)
+    run.add_argument("--max-fills-per-token", type=int, default=4)
     run.add_argument("--maker-only", action="store_true", help="Required guardrail: only maker-style virtual quotes.")
     run.add_argument("--out-dir", type=Path, required=True)
     run.add_argument("--poll-seconds", type=float, default=30.0)
@@ -64,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
             poll_seconds=args.poll_seconds,
             quote_mode=args.quote_mode,
             quote_expiry_seconds=args.quote_expiry_seconds,
+            max_fills_per_market=args.max_fills_per_market,
+            max_fills_per_token=args.max_fills_per_token,
         )
         print(f"paper run complete: {state['counts']}")
         return 0

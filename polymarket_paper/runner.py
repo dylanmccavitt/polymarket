@@ -47,6 +47,8 @@ def run_paper_session(
     poll_seconds: float = 30.0,
     quote_mode: str = "one_tick_inside",
     quote_expiry_seconds: int = 30,
+    max_fills_per_market: int = 8,
+    max_fills_per_token: int = 4,
 ) -> dict[str, Any]:
     if not maker_only:
         raise ValueError("paper run only supports maker-only simulation")
@@ -63,6 +65,8 @@ def run_paper_session(
             "quote_size": quote_size,
             "quote_mode": quote_mode,
             "quote_expiry_seconds": quote_expiry_seconds,
+            "max_fills_per_market": max_fills_per_market,
+            "max_fills_per_token": max_fills_per_token,
         },
     )
     append_jsonl(
@@ -104,7 +108,11 @@ def run_paper_session(
         )
     source_rows = selected_rows if selected_rows else observation_candidates(rows)
     markets = [_market_dict(row) for row in source_rows[:max_markets]]
-    risk = RiskState(max_total_exposure=max_virtual_exposure)
+    risk = RiskState(
+        max_total_exposure=max_virtual_exposure,
+        max_market_fills=max_fills_per_market,
+        max_token_fills=max_fills_per_token,
+    )
     simulator = PaperSimulator(
         risk=risk,
         quote_size=quote_size,
