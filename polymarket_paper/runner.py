@@ -49,6 +49,8 @@ def run_paper_session(
     quote_expiry_seconds: int = 30,
     max_fills_per_market: int = 8,
     max_fills_per_token: int = 4,
+    min_exit_profit_ticks: int = 1,
+    stuck_inventory_minutes: float = 20.0,
 ) -> dict[str, Any]:
     if not maker_only:
         raise ValueError("paper run only supports maker-only simulation")
@@ -67,6 +69,8 @@ def run_paper_session(
             "quote_expiry_seconds": quote_expiry_seconds,
             "max_fills_per_market": max_fills_per_market,
             "max_fills_per_token": max_fills_per_token,
+            "min_exit_profit_ticks": min_exit_profit_ticks,
+            "stuck_inventory_minutes": stuck_inventory_minutes,
         },
     )
     append_jsonl(
@@ -118,6 +122,7 @@ def run_paper_session(
         quote_size=quote_size,
         quote_mode=quote_mode,
         quote_expiry_seconds=quote_expiry_seconds,
+        min_exit_profit_ticks=min_exit_profit_ticks,
     )
     books_by_market: dict[str, dict[str, dict[str, Any]]] = {}
     deadline = time.monotonic() + (minutes * 60)
