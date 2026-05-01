@@ -244,6 +244,69 @@ class ReplayDashboardParityTests(unittest.TestCase):
             self.assertIn("## Fill Opportunity Analysis", summary)
             self.assertIn("## Policy Comparison", summary)
 
+    def test_fill_quality_reports_post_fill_markout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = ensure_run_dir(Path(tmp))
+            append_jsonl(
+                run_dir / "markets.jsonl",
+                {
+                    "type": "market_filter",
+                    "selected": True,
+                    "normalized": {
+                        "market_id": "m1",
+                        "question": "Will markout move?",
+                        "slug": "markout-move",
+                        "token_ids": ["yes"],
+                        "outcomes": ["Yes"],
+                    },
+                },
+            )
+            for event_id, seconds, midpoint in (
+                ("book-fill", 0, 0.5),
+                ("book-30", 30, 0.48),
+                ("book-60", 60, 0.47),
+                ("book-120", 120, 0.46),
+            ):
+                append_jsonl(
+                    run_dir / "books.jsonl",
+                    {
+                        "type": "book_snapshot",
+                        "event_id": event_id,
+                        "timestamp": f"2026-05-01T12:{seconds // 60:02d}:{seconds % 60:02d}+00:00",
+                        "market_id": "m1",
+                        "token_id": "yes",
+                        "outcome": "Yes",
+                        "best_bid": round(midpoint - 0.01, 2),
+                        "best_ask": round(midpoint + 0.01, 2),
+                        "midpoint": midpoint,
+                        "spread": 0.02,
+                        "tick_size": 0.01,
+                    },
+                )
+            append_jsonl(
+                run_dir / "fills.jsonl",
+                {
+                    "type": "simulated_fill",
+                    "quote_id": "q1",
+                    "timestamp": "2026-05-01T12:00:00+00:00",
+                    "market_id": "m1",
+                    "token_id": "yes",
+                    "side": "bid",
+                    "price": 0.5,
+                    "size": 5,
+                    "evidence_event_id": "book-fill",
+                },
+            )
+
+            state = build_run_state(run_dir)
+            quality = state["fill_quality"]
+
+            self.assertEqual(quality["fills_analyzed"], 1)
+            self.assertEqual(quality["adverse_selection_flags"], 1)
+            self.assertEqual(quality["horizons"]["30s"]["average_markout"], -0.02)
+            self.assertEqual(quality["horizons"]["60s"]["average_markout"], -0.03)
+            self.assertEqual(quality["horizons"]["120s"]["average_markout"], -0.04)
+
     def test_static_market_is_reported_from_quote_diagnostics(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = ensure_run_dir(Path(tmp))

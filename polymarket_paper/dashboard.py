@@ -150,6 +150,10 @@ INDEX_HTML = """<!doctype html>
           <table><tbody id="opportunity"></tbody></table>
         </div>
         <div class="panel">
+          <div class="panel-head"><div class="label">Fill Quality</div></div>
+          <table><tbody id="quality"></tbody></table>
+        </div>
+        <div class="panel">
           <div class="panel-head"><div class="label">Policy Comparison</div></div>
           <table><tbody id="policy"></tbody></table>
         </div>
@@ -237,6 +241,18 @@ INDEX_HTML = """<!doctype html>
       };
       return rows(compactRows);
     }
+    function fillQualityRows(quality) {
+      const horizons = quality?.horizons || {};
+      const compactRows = {
+        fills_analyzed: quality?.fills_analyzed ?? 0,
+        adverse_selection_flags: quality?.adverse_selection_flags ?? 0,
+        missing_markouts: quality?.missing_markouts ?? 0,
+        markout_30s: horizons['30s']?.average_markout ?? 0,
+        markout_60s: horizons['60s']?.average_markout ?? 0,
+        markout_120s: horizons['120s']?.average_markout ?? 0
+      };
+      return rows(compactRows);
+    }
     function policyRows(comparison) {
       const modes = comparison?.modes || {};
       const entries = Object.entries(modes).sort().map(([mode, values]) => {
@@ -298,6 +314,7 @@ INDEX_HTML = """<!doctype html>
       document.getElementById('pnl').innerHTML = rows(state.pnl);
       document.getElementById('risks').innerHTML = rows(state.risk_counts);
       document.getElementById('opportunity').innerHTML = opportunityRows(state.fill_opportunity);
+      document.getElementById('quality').innerHTML = fillQualityRows(state.fill_quality);
       document.getElementById('policy').innerHTML = policyRows(state.policy_comparison);
       document.getElementById('skips').innerHTML = rows(state.skipped_counts);
       document.getElementById('books').innerHTML = Object.values(state.latest_books || {}).slice(-40).map(b => {

@@ -12,6 +12,9 @@ from .simulator import QUOTE_MODES, quote_price_for_policy
 from .timeutils import iso_now, parse_dt
 
 
+FILL_MARKOUT_SECONDS = (30, 60, 120)
+
+
 def _latest_books(books: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     latest: dict[str, dict[str, Any]] = {}
     for book in books:
@@ -440,6 +443,116 @@ def _policy_comparison(quotes: list[dict[str, Any]], books: list[dict[str, Any]]
     }
 
 
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_book_at_or_after(books: list[dict[str, Any]], target) -> dict[str, Any] | None:
+    for book in books:
+        timestamp = parse_dt(book.get("timestamp"))
+        if timestamp is not None and timestamp >= target and book.get("midpoint") is not None:
+            return book
+    return None
+
+
+def _tick_size_for_fill(
+    fill: dict[str, Any],
+    by_event: dict[str, dict[str, Any]],
+    token_books: list[dict[str, Any]],
+) -> float:
+    evidence = by_event.get(str(fill.get("evidence_event_id") or ""))
+    tick = _float_or_none(fill.get("tick_size"))
+    if tick is None and evidence is not None:
+        tick = _float_or_none(evidence.get("tick_size"))
+    if tick is None:
+        tick = next((_float_or_none(book.get("tick_size")) for book in token_books if _float_or_none(book.get("tick_size"))), None)
+    return tick or 0.01
+
+
+def _fill_markout_rows(fills: list[dict[str, Any]], books: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped_books = _books_by_token(books)
+    by_event = _books_by_event_id(books)
+    rows: list[dict[str, Any]] = []
+    for fill in fills:
+        if fill.get("type") != "simulated_fill":
+            continue
+        token_id = str(fill.get("token_id") or "")
+        token_books = grouped_books.get(token_id, [])
+        fill_time = parse_dt(fill.get("timestamp"))
+        price = _float_or_none(fill.get("price"))
+        tick = _tick_size_for_fill(fill, by_event, token_books)
+        horizons: dict[str, dict[str, Any]] = {}
+        for seconds in FILL_MARKOUT_SECONDS:
+            key = f"{seconds}s"
+            mark_book = _first_book_at_or_after(token_books, fill_time + timedelta(seconds=seconds)) if fill_time else None
+            midpoint = _float_or_none(mark_book.get("midpoint")) if mark_book else None
+            markout = None
+            if midpoint is not None and price is not None:
+                if fill.get("side") == "ask":
+                    markout = round(price - midpoint, 6)
+                else:
+                    markout = round(midpoint - price, 6)
+            horizons[key] = {
+                "markout": markout,
+                "event_id": mark_book.get("event_id") if mark_book else None,
+                "timestamp": mark_book.get("timestamp") if mark_book else None,
+                "midpoint": midpoint,
+            }
+        rows.append(
+            {
+                "quote_id": fill.get("quote_id"),
+                "market_id": fill.get("market_id"),
+                "token_id": fill.get("token_id"),
+                "side": fill.get("side"),
+                "price": fill.get("price"),
+                "size": fill.get("size"),
+                "timestamp": fill.get("timestamp"),
+                "tick_size": tick,
+                "horizons": horizons,
+                "adverse_selection_flag": any(
+                    values.get("markout") is not None and float(values["markout"]) < -1 * tick
+                    for values in horizons.values()
+                ),
+            }
+        )
+    return rows
+
+
+def _fill_quality_from_markouts(markouts: list[dict[str, Any]]) -> dict[str, Any]:
+    horizon_stats: dict[str, dict[str, Any]] = {}
+    missing = 0
+    for seconds in FILL_MARKOUT_SECONDS:
+        key = f"{seconds}s"
+        samples: list[float] = []
+        adverse = 0
+        for row in markouts:
+            values = (row.get("horizons") or {}).get(key) or {}
+            markout = values.get("markout")
+            if markout is None:
+                missing += 1
+                continue
+            markout_value = float(markout)
+            samples.append(markout_value)
+            if markout_value < -1 * float(row.get("tick_size") or 0.01):
+                adverse += 1
+        horizon_stats[key] = {
+            "average_markout": round(sum(samples) / len(samples), 6) if samples else 0.0,
+            "adverse_count": adverse,
+            "sample_count": len(samples),
+        }
+    return {
+        "fills_analyzed": len(markouts),
+        "adverse_selection_flags": sum(1 for row in markouts if row.get("adverse_selection_flag")),
+        "missing_markouts": missing,
+        "horizons": horizon_stats,
+    }
+
+
 def _market_summaries(
     watched_markets: list[dict[str, Any]],
     latest_books: dict[str, dict[str, Any]],
@@ -558,6 +671,8 @@ def build_run_state(data_dir: Path) -> dict[str, Any]:
     quote_lifecycle = _quote_lifecycle(quotes, books, fills, risk_events)
     policy_comparison = _policy_comparison(quotes, books)
     fill_opportunity = _fill_opportunity_analysis(quote_lifecycle, books, risk_events, policy_comparison)
+    fill_markouts = _fill_markout_rows(fill_rows, books)
+    fill_quality = _fill_quality_from_markouts(fill_markouts)
     for token_id, book in latest_books.items():
         label = labels_by_token.get(token_id)
         if label:
@@ -621,6 +736,7 @@ def build_run_state(data_dir: Path) -> dict[str, Any]:
         "recent_risk_events": risk_events[-50:],
         "quote_lifecycle": quote_lifecycle,
         "fill_opportunity": fill_opportunity,
+        "fill_quality": fill_quality,
         "policy_comparison": policy_comparison,
         "arb_alerts": [row for row in arb_alerts if row.get("is_alert")],
         "exposures_by_market": {market: round(value, 6) for market, value in exposures.items()},
@@ -639,6 +755,7 @@ def render_summary(state: dict[str, Any], *, date: str | None = None, dashboard_
     skipped_counts = state["skipped_counts"]
     risk_counts = state["risk_counts"]
     opportunity = state.get("fill_opportunity", {})
+    quality = state.get("fill_quality", {})
     comparison = state.get("policy_comparison", {})
     lines = [
         f"# Polymarket Paper Run Summary{f' - {date}' if date else ''}",
@@ -702,6 +819,14 @@ def render_summary(state: dict[str, Any], *, date: str | None = None, dashboard_
         "- Fill evidence model: "
         f"{evidence_model.get('status', 'unknown')} ({evidence_model.get('reason', 'no reason recorded')})"
     )
+    horizons = quality.get("horizons") or {}
+    lines.extend(["", "## Fill Quality", ""])
+    lines.append(f"- Fills analyzed: `{quality.get('fills_analyzed', 0)}`")
+    lines.append(f"- Adverse-selection flags: `{quality.get('adverse_selection_flags', 0)}`")
+    lines.append(f"- Missing markouts: `{quality.get('missing_markouts', 0)}`")
+    lines.append(f"- 30s average markout: `{(horizons.get('30s') or {}).get('average_markout', 0.0)}`")
+    lines.append(f"- 60s average markout: `{(horizons.get('60s') or {}).get('average_markout', 0.0)}`")
+    lines.append(f"- 120s average markout: `{(horizons.get('120s') or {}).get('average_markout', 0.0)}`")
     lines.extend(["", "## Policy Comparison", ""])
     lines.append(f"- Basis: {comparison.get('basis', 'not enough quote placement evidence')}")
     modes = comparison.get("modes") or {}
