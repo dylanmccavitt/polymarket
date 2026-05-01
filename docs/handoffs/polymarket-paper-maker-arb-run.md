@@ -298,3 +298,25 @@ Current 30-minute dashboard:
 `http://127.0.0.1:8767`
 
 This dashboard reads from `data/runs/2026-05-01-expiry60`. It is read-only over JSONL replay state.
+
+## Risk Controls Implementation Checkpoint
+
+Status:
+
+- Implemented paper-only per-market and per-token fill caps.
+- Denied fills now remain journalable in `fills.jsonl` with structured reasons and cited evidence events.
+- Added post-fill markout replay at 30s, 60s, and 120s.
+- Added market suitability replay from quote counts, fill concentration, adverse-selection flags, expired quotes, static-market evidence, and configured fill caps.
+- Added `Fill Quality` and `Market Suitability` dashboard panels from `build_run_state`.
+
+Checks:
+
+- `python3 -m unittest tests.test_simulator`: passed.
+- `python3 -m unittest tests.test_replay_dashboard`: passed.
+- `make lint typecheck test`: passed; guardrail scan passed and 24 tests passed.
+- `python3 -m polymarket_paper.guardrails`: passed.
+
+Next:
+
+- Run the required 30-minute `data/runs/2026-05-01-risk-controls` paper session with `--max-fills-per-market 8` and `--max-fills-per-token 4`.
+- Generate the report, start the read-only dashboard on `http://127.0.0.1:8768`, verify `/state.json`, and compare concentration against `data/runs/2026-05-01-expiry60`.
