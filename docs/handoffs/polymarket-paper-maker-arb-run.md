@@ -4,7 +4,9 @@
 
 Implemented the first usable paper-only Polymarket system in `/Users/dylanmccavitt/polymarket` on branch `paper-maker-arb-run`.
 
-The repo is now a local git repository with private GitHub remote `origin` at `https://github.com/DylanMcCavitt/polymarket.git`. The original docs were committed first on `main`, then this work continued on dedicated branch `paper-maker-arb-run`. Draft PR: `https://github.com/DylanMcCavitt/polymarket/pull/1`.
+The repo is now a local git repository with private GitHub remote `origin` at `https://github.com/DylanMcCavitt/polymarket.git`. The original docs were committed first on `main`, then this work continued on dedicated branch `paper-maker-arb-run`. PR `https://github.com/DylanMcCavitt/polymarket/pull/1` is merged into `main`.
+
+Linear/Symphony track status: `AGE-397` is Done. `AGE-398` is the next active implementation issue for the same-run suitability brake and should use its own issue workspace, branch, and PR.
 
 Implemented:
 
