@@ -399,3 +399,28 @@ Next experiment:
 - Review `too_adverse` markets before changing quote aggressiveness.
 - Keep `--max-fills-per-market 8` and `--max-fills-per-token 4` for the next short run unless the review finds the caps are too permissive.
 - Do not run a longer session until the 30-minute risk-controls run has been reviewed.
+
+## Inventory Exit Implementation Checkpoint
+
+Status:
+
+- Added profit-targeted inventory exit ask quotes with `exit_context`.
+- Entry fill caps now apply to bid entries only; ask exits require inventory but bypass entry concentration caps.
+- Added separate entry and exit counters in risk exposure payloads.
+- Added CLI/run config for `--min-exit-profit-ticks` and `--stuck-inventory-minutes`.
+- Added FIFO round-trip replay from `fills.jsonl` with realized PnL, fill-to-flip rate, open inventory, stuck inventory, and unmatched exit size.
+- Added `Round Trip PnL`, `Open Inventory`, and `Recent Round Trips` dashboard panels from `build_run_state`.
+- Updated architecture docs to keep mark-to-mid PnL separate from realized round-trip PnL.
+
+Checks:
+
+- `python3 -m unittest tests.test_simulator`: passed.
+- `python3 -m unittest tests.test_replay_dashboard`: passed.
+- `python3 -m polymarket_paper run --help`: passed and includes exit config flags.
+- `make lint typecheck test`: passed; guardrail scan passed and 28 tests passed.
+- `python3 -m polymarket_paper.guardrails`: passed.
+
+Next:
+
+- Run the required 30-minute `data/runs/2026-05-01-exit-v1` paper session with `--min-exit-profit-ticks 1` and `--stuck-inventory-minutes 20`.
+- Generate the report, start the read-only dashboard on `http://127.0.0.1:8769`, verify `/state.json`, and compare realized exits, open inventory, concentration, and adverse-selection evidence against `data/runs/2026-05-01-risk-controls`.
