@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SYMPHONY_DIR="${SYMPHONY_DIR:-/Users/dylanmccavitt/projects/symphony/elixir}"
+WORKFLOW_FILE="${POLYMARKET_WORKFLOW_FILE:-/Users/dylanmccavitt/polymarket/WORKFLOW.md}"
+LOGS_ROOT="${SYMPHONY_LOGS_ROOT:-/Users/dylanmccavitt/.codex/symphony-logs/polymarket}"
+PORT="${SYMPHONY_PORT:-4003}"
+ENV_FILE="${SYMPHONY_ENV_FILE:-/Users/dylanmccavitt/.config/symphony/env}"
+MISE_BIN="${MISE_BIN:-/opt/homebrew/bin/mise}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/symphony/start
+  scripts/symphony/start --check
+  scripts/symphony/start --help
+
+Environment:
+  SYMPHONY_ENV_FILE       Env file to source before launch. Default: ~/.config/symphony/env
+  SYMPHONY_DIR            Local Symphony Elixir checkout.
+  POLYMARKET_WORKFLOW_FILE Workflow file to run.
+  SYMPHONY_LOGS_ROOT      Logs root.
+  SYMPHONY_PORT           API port. Default: 4003.
+USAGE
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+if [[ -z "${LINEAR_API_KEY:-}" ]]; then
+  echo "LINEAR_API_KEY is required before starting Symphony." >&2
+  echo "Expected it from $ENV_FILE or the current shell environment." >&2
+  exit 1
+fi
+
+if [[ ! -d "$SYMPHONY_DIR" ]]; then
+  echo "Symphony directory not found: $SYMPHONY_DIR" >&2
+  exit 1
+fi
+
+if [[ ! -f "$WORKFLOW_FILE" ]]; then
+  echo "Workflow file not found: $WORKFLOW_FILE" >&2
+  exit 1
+fi
+
+mkdir -p "$LOGS_ROOT"
+
+COMMAND=(
+  ./bin/symphony
+  --i-understand-that-this-will-be-running-without-the-usual-guardrails
+  --logs-root "$LOGS_ROOT"
+  --port "$PORT"
+  "$WORKFLOW_FILE"
+)
+
+if [[ "${1:-}" == "--check" ]]; then
+  echo "LINEAR_API_KEY=available"
+  echo "SYMPHONY_DIR=$SYMPHONY_DIR"
+  echo "WORKFLOW_FILE=$WORKFLOW_FILE"
+  echo "LOGS_ROOT=$LOGS_ROOT"
+  echo "PORT=$PORT"
+  printf 'command:'
+  printf ' %q' "${COMMAND[@]}"
+  echo
+  exit 0
+fi
+
+cd "$SYMPHONY_DIR"
+if [[ -x "$MISE_BIN" ]]; then
+  exec "$MISE_BIN" exec -- "${COMMAND[@]}"
+fi
+
+exec "${COMMAND[@]}"

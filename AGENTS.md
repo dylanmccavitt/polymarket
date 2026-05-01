@@ -1,23 +1,37 @@
 # Project Flow
 
+## Linear And Symphony
+
+- Linear project: `Polymarket: live-state paper automation`.
+- Parent track issue: `AGE-396`.
+- Symphony config: `WORKFLOW.md`.
+- Symphony docs: `docs/SYMPHONY.md`.
+- Track order: `docs/linear-track.md`.
+- Start Symphony from this checkout with `scripts/symphony/start`.
+- The launcher sources `/Users/dylanmccavitt/.config/symphony/env` when present and must pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails`.
+- Symphony workspaces live under `/Users/dylanmccavitt/.codex/symphony-workspaces/polymarket`.
+- Move exactly one unblocked Linear issue to `Ready` or `Todo` when you want Symphony to work it. Keep future issues in `Backlog`.
+- Comments do not trigger Symphony for this repo. Move exactly one unblocked issue to an active state when work should start.
+- Every issue must keep one persistent Linear comment with `## Codex Workpad`.
+- If completing an issue exposes an out-of-scope gap, create a child Linear issue under `AGE-396` before moving the current issue to `Human Review`.
+- Completed issue work requires code/docs, checks, handoff update, branch commit, push, and an open or updated PR unless a blocker is documented.
+
 ## How To Run
 
 - Work from `/Users/dylanmccavitt/polymarket`.
-- This project is currently a paper-only Polymarket research scaffold. There is no runnable implementation yet.
-- First implementation should add a local setup command, a test/lint/typecheck harness, paper-only CLI/data commands, and a lightweight local dashboard for viewing runs.
+- This project is a paper-only Polymarket research scaffold with CLI/data commands and a lightweight local read-only dashboard.
+- This machine currently has `python3` available, but no `python` shim.
 - Prefer module execution until console scripts exist:
-  - `python -m polymarket_paper discover --limit 100 --out data/runs/YYYY-MM-DD/markets.jsonl`
-  - `python -m polymarket_paper run --minutes 90 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --out-dir data/runs/YYYY-MM-DD`
-  - `python -m polymarket_paper report --date YYYY-MM-DD --data-dir data/runs/YYYY-MM-DD`
-  - `python -m polymarket_paper dashboard --data-dir data/runs/YYYY-MM-DD --host 127.0.0.1 --port 8765`
+  - `python3 -m polymarket_paper discover --limit 100 --out data/runs/YYYY-MM-DD/markets.jsonl`
+  - `python3 -m polymarket_paper run --minutes 90 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --out-dir data/runs/YYYY-MM-DD`
+  - `python3 -m polymarket_paper report --date YYYY-MM-DD --data-dir data/runs/YYYY-MM-DD`
+  - `python3 -m polymarket_paper dashboard --data-dir data/runs/YYYY-MM-DD --host 127.0.0.1 --port 8765`
 
 ## How To Test, Lint, And Typecheck
 
-- Add these commands with the first code scaffold:
-  - Tests: `make test`
-  - Lint: `make lint`
-  - Typecheck/syntax check: `make typecheck`
-- Until the harness exists, document missing checks in the handoff.
+- Tests: `make test`
+- Lint: `make lint`
+- Typecheck/syntax check: `make typecheck`
 - Run touched execution paths directly when changing market-data, simulation, risk, or reporting code.
 - The test suite should include paper-trading signal tests, not only import/unit tests:
   - market normalization and filter decisions from fixtures
