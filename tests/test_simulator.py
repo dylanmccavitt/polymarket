@@ -88,6 +88,46 @@ class SimulatorTrustTests(unittest.TestCase):
         self.assertEqual(fills[0]["evidence_event_id"], "book-fill")
         self.assertEqual(fills[0]["reason"], "book_ask_traded_through_bid")
 
+    def test_quote_policy_variants_choose_distinct_maker_prices(self):
+        wide = snapshot(best_bid=0.49, best_ask=0.53, midpoint=0.51, spread=0.04)
+
+        best_bid = PaperSimulator(risk=RiskState(max_total_exposure=100), quote_size=5, quote_mode="best_bid")
+        one_tick = PaperSimulator(risk=RiskState(max_total_exposure=100), quote_size=5, quote_mode="one_tick_inside")
+        midpoint = PaperSimulator(
+            risk=RiskState(max_total_exposure=100),
+            quote_size=5,
+            quote_mode="midpoint_when_spread_allows",
+        )
+
+        self.assertEqual(best_bid.generate_quotes(wide, now=NOW)[0]["price"], 0.49)
+        self.assertEqual(one_tick.generate_quotes(wide, now=NOW)[0]["price"], 0.5)
+        self.assertEqual(midpoint.generate_quotes(wide, now=NOW)[0]["price"], 0.51)
+        self.assertEqual(midpoint.generate_quotes(wide, now=NOW)[0]["quote_mode"], "midpoint_when_spread_allows")
+
+    def test_quote_expiry_seconds_are_configurable(self):
+        sim = PaperSimulator(risk=RiskState(max_total_exposure=100), quote_size=5, quote_expiry_seconds=12)
+
+        quote = sim.generate_quotes(snapshot(), now=NOW)[0]
+
+        self.assertEqual(quote["expires_at"], (NOW + timedelta(seconds=12)).isoformat())
+        self.assertEqual(quote["quote_expiry_seconds"], 12)
+
+    def test_policy_variants_do_not_create_optimistic_fills_without_trade_through(self):
+        sim = PaperSimulator(
+            risk=RiskState(max_total_exposure=100),
+            quote_size=5,
+            quote_mode="midpoint_when_spread_allows",
+        )
+        sim.generate_quotes(snapshot(best_bid=0.49, best_ask=0.53, midpoint=0.51, spread=0.04), now=NOW)
+
+        fills, risk_events = sim.process_snapshot(
+            snapshot(event_id="book-2", best_bid=0.5, best_ask=0.52, midpoint=0.51, spread=0.02),
+            now=NOW + timedelta(seconds=5),
+        )
+
+        self.assertEqual(fills, [])
+        self.assertEqual(risk_events, [])
+
 
 if __name__ == "__main__":
     unittest.main()

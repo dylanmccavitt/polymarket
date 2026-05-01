@@ -146,6 +146,14 @@ INDEX_HTML = """<!doctype html>
           <table><tbody id="risks"></tbody></table>
         </div>
         <div class="panel">
+          <div class="panel-head"><div class="label">Fill Opportunity</div></div>
+          <table><tbody id="opportunity"></tbody></table>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div class="label">Policy Comparison</div></div>
+          <table><tbody id="policy"></tbody></table>
+        </div>
+        <div class="panel">
           <div class="panel-head"><div class="label">Skipped Markets</div></div>
           <table><tbody id="skips"></tbody></table>
         </div>
@@ -215,6 +223,28 @@ INDEX_HTML = """<!doctype html>
     function metric(label, value, cls='') {
       return `<div class="metric-card"><div class="label">${esc(label)}</div><div class="metric ${cls}">${esc(value ?? 0)}</div></div>`;
     }
+    function opportunityRows(opportunity) {
+      const missed = opportunity?.missed_ticks || {};
+      const compactRows = {
+        expired_quotes: opportunity?.expired_quotes ?? 0,
+        missed_1_tick: missed['1_tick'] ?? 0,
+        missed_2_ticks: missed['2_ticks'] ?? 0,
+        missed_more: missed.more ?? 0,
+        longer_expiry_would_fill: opportunity?.would_have_filled_under_longer_expiry ?? 0,
+        useful_markets: opportunity?.markets_with_useful_book_movement || [],
+        static_markets: opportunity?.markets_too_static || [],
+        evidence_model: opportunity?.evidence_model?.status || 'unknown'
+      };
+      return rows(compactRows);
+    }
+    function policyRows(comparison) {
+      const modes = comparison?.modes || {};
+      const entries = Object.entries(modes).sort().map(([mode, values]) => {
+        const detail = `fills ${values.plausible_fill_count ?? 0}, longer ${values.post_expiry_fill_count ?? 0}, missed ${values.avg_ticks_missed ?? '—'}, life ${values.avg_lifetime_seconds ?? '—'}s, adverse ${values.adverse_selection_risk_count ?? 0}`;
+        return `<tr><td><code>${esc(mode)}</code><div class="subtle">${esc(values.assessment || '')}</div></td><td>${esc(detail)}</td></tr>`;
+      }).join('');
+      return entries || '<tr><td colspan="2" class="subtle">No comparable quote policies.</td></tr>';
+    }
     function marketCard(m) {
       const outcomes = (m.outcomes || []).map(o => `
         <div class="outcome-row">
@@ -267,6 +297,8 @@ INDEX_HTML = """<!doctype html>
       document.getElementById('market-board').innerHTML = (state.market_summaries || []).map(marketCard).join('') || '<div class="empty">No selected markets.</div>';
       document.getElementById('pnl').innerHTML = rows(state.pnl);
       document.getElementById('risks').innerHTML = rows(state.risk_counts);
+      document.getElementById('opportunity').innerHTML = opportunityRows(state.fill_opportunity);
+      document.getElementById('policy').innerHTML = policyRows(state.policy_comparison);
       document.getElementById('skips').innerHTML = rows(state.skipped_counts);
       document.getElementById('books').innerHTML = Object.values(state.latest_books || {}).slice(-40).map(b => {
         const name = b.display_name || `${b.market_id || 'Unknown'} - ${b.outcome || shortToken(b.token_id)}`;

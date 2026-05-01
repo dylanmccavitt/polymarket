@@ -13,10 +13,10 @@ The runtime is a standard-library Python package exposed through `python3 -m pol
 - `polymarket_paper.filters`: market normalization and deterministic filter decisions.
 - `polymarket_paper.runner`: orchestration for discovery, polling, quote generation, arbitrage scans, and report refresh.
 - `polymarket_paper.risk`: central exposure, stale-feed, quote-expiry, spread-widening, and midpoint-move checks.
-- `polymarket_paper.simulator`: virtual maker quotes and conservative fill simulation.
+- `polymarket_paper.simulator`: virtual maker quotes, paper-only quote policy variants, configurable quote expiry, and conservative fill simulation.
 - `polymarket_paper.arbitrage`: binary and multi-outcome no-arbitrage scanner math.
 - `polymarket_paper.journal`: JSONL append/read helpers and required run-log files.
-- `polymarket_paper.report`: JSONL replay, PnL components, summary generation, and dashboard state.
+- `polymarket_paper.report`: JSONL replay, quote lifecycle diagnostics, fill-opportunity analysis, quote-policy comparison, PnL components, summary generation, and dashboard state.
 - `polymarket_paper.dashboard`: local read-only HTTP server over replayed run evidence.
 - `polymarket_paper.guardrails`: repository scan for live-trading code patterns.
 
@@ -32,7 +32,9 @@ Every row keeps the raw API record, normalized fields, filter decision, and skip
 
 `run` loads existing `markets.jsonl` or discovers markets, selects the filtered watchlist, records polling fallback mode, and polls public CLOB orderbooks.
 
-Each snapshot is written to `books.jsonl`. The simulator generates paper maker quotes into `quotes.jsonl` only after risk checks pass. Fills are written to `fills.jsonl` only when a later book event makes the virtual quote plausibly fillable. Risk stops, quote cancellations, fetch failures, observation mode, and run start/complete events go to `risk_events.jsonl`.
+Each snapshot is written to `books.jsonl`. The simulator generates paper maker quotes into `quotes.jsonl` only after risk checks pass. Quote records include the selected paper-only quote mode, expiry seconds, source book event, and placement context. Supported quote modes are `best_bid`, `one_tick_inside`, and `midpoint_when_spread_allows`; all remain maker-only.
+
+Fills are written to `fills.jsonl` only when a later book event makes the virtual quote plausibly fillable. Risk stops, quote cancellations, fetch failures, observation mode, public trade-evidence status, and run start/complete events go to `risk_events.jsonl`.
 
 If fewer than three markets pass filters, the run enters observation mode instead of relaxing filters.
 
@@ -40,7 +42,9 @@ If fewer than three markets pass filters, the run enters observation mode instea
 
 `report` and `dashboard` both use `report.build_run_state`, so the terminal summary and browser UI derive from the same JSONL evidence.
 
-The dashboard is local and read-only. It displays market names, outcomes, public book levels, mid-price history, virtual quote counts, fills, risk events, skipped-market reasons, and PnL components.
+Quote lifecycle diagnostics are reconstructed from `quotes.jsonl`, `books.jsonl`, `fills.jsonl`, and `risk_events.jsonl`. For each quote, replay records placement context, close reason, closest book approach, ticks missed, subsequent best book levels, and whether a longer expiry would have made the quote fillable under the same book-move evidence.
+
+The dashboard is local and read-only. It displays market names, outcomes, public book levels, mid-price history, virtual quote counts, fills, risk events, skipped-market reasons, fill-opportunity analysis, quote-policy comparison, and PnL components.
 
 ## Important Invariants
 
@@ -49,6 +53,7 @@ The dashboard is local and read-only. It displays market names, outcomes, public
 - No command accepts credentials or account identifiers.
 - Every selected market must pass explicit filters before quoting.
 - Every simulated fill must cite an evidence event ID from the market-data log.
+- Quote diagnostics and policy comparisons must be replayable from persisted JSONL evidence.
 - Reports and dashboard state must be reproducible after process exit from JSONL logs.
 - Missing metadata is conservative: skip or report `unknown`, never assume favorable values.
 - Dashboard rendering must not mutate run logs, strategy decisions, or trading behavior.

@@ -6,6 +6,7 @@ from pathlib import Path
 from .dashboard import serve_dashboard
 from .report import generate_report
 from .runner import discover_markets, run_paper_session
+from .simulator import QUOTE_MODES
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-markets", type=int, default=10)
     run.add_argument("--max-virtual-exposure", type=float, default=100.0)
     run.add_argument("--quote-size", type=float, default=5.0)
+    run.add_argument("--quote-mode", choices=QUOTE_MODES, default="one_tick_inside")
+    run.add_argument("--quote-expiry-seconds", type=int, default=30)
     run.add_argument("--maker-only", action="store_true", help="Required guardrail: only maker-style virtual quotes.")
     run.add_argument("--out-dir", type=Path, required=True)
     run.add_argument("--poll-seconds", type=float, default=30.0)
@@ -59,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
             quote_size=args.quote_size,
             maker_only=args.maker_only,
             poll_seconds=args.poll_seconds,
+            quote_mode=args.quote_mode,
+            quote_expiry_seconds=args.quote_expiry_seconds,
         )
         print(f"paper run complete: {state['counts']}")
         return 0

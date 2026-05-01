@@ -45,6 +45,8 @@ def run_paper_session(
     quote_size: float,
     maker_only: bool,
     poll_seconds: float = 30.0,
+    quote_mode: str = "one_tick_inside",
+    quote_expiry_seconds: int = 30,
 ) -> dict[str, Any]:
     if not maker_only:
         raise ValueError("paper run only supports maker-only simulation")
@@ -59,6 +61,8 @@ def run_paper_session(
             "max_markets": max_markets,
             "max_virtual_exposure": max_virtual_exposure,
             "quote_size": quote_size,
+            "quote_mode": quote_mode,
+            "quote_expiry_seconds": quote_expiry_seconds,
         },
     )
     append_jsonl(
@@ -68,6 +72,15 @@ def run_paper_session(
             "timestamp": iso_now(),
             "mode": "polling",
             "reason": "websocket_not_required_for_first_scaffold",
+        },
+    )
+    append_jsonl(
+        out_dir / "risk_events.jsonl",
+        {
+            "type": "public_trade_evidence_status",
+            "timestamp": iso_now(),
+            "status": "book_move_only",
+            "reason": "public_trade_tape_integration_deferred_to_keep_paper_smoke_and_offline_tests_unblocked",
         },
     )
     rows = _load_or_discover(out_dir, max(100, max_markets * 5))
@@ -92,7 +105,12 @@ def run_paper_session(
     source_rows = selected_rows if selected_rows else observation_candidates(rows)
     markets = [_market_dict(row) for row in source_rows[:max_markets]]
     risk = RiskState(max_total_exposure=max_virtual_exposure)
-    simulator = PaperSimulator(risk=risk, quote_size=quote_size)
+    simulator = PaperSimulator(
+        risk=risk,
+        quote_size=quote_size,
+        quote_mode=quote_mode,
+        quote_expiry_seconds=quote_expiry_seconds,
+    )
     books_by_market: dict[str, dict[str, dict[str, Any]]] = {}
     deadline = time.monotonic() + (minutes * 60)
     loops = 0

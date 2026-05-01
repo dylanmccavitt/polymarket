@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter, defaultdict
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from .journal import read_jsonl
+from .simulator import QUOTE_MODES, quote_price_for_policy
 from .timeutils import iso_now, parse_dt
 
 
@@ -52,6 +55,389 @@ def _book_history(books: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]
             }
         )
     return {token_id: points[-80:] for token_id, points in history.items()}
+
+
+def _books_by_token(books: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for book in books:
+        token_id = str(book.get("token_id") or "")
+        if token_id:
+            grouped[token_id].append(book)
+    for rows in grouped.values():
+        rows.sort(key=lambda row: parse_dt(row.get("timestamp")) or parse_dt("1970-01-01T00:00:00+00:00"))
+    return grouped
+
+
+def _books_by_event_id(books: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(book.get("event_id")): book for book in books if book.get("event_id")}
+
+
+def _event_by_quote_id(rows: list[dict[str, Any]], row_type: str | None = None) -> dict[str, dict[str, Any]]:
+    events: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if row_type and row.get("type") != row_type:
+            continue
+        quote_id = str(row.get("quote_id") or "")
+        if quote_id and quote_id not in events:
+            events[quote_id] = row
+    return events
+
+
+def _ticks_for_distance(distance: float | None, tick: float) -> int | None:
+    if distance is None:
+        return None
+    if distance <= 0:
+        return 0
+    if tick <= 0:
+        return None
+    return max(0, int(math.ceil((distance - 1e-9) / tick)))
+
+
+def _quote_distance(quote: dict[str, Any], book: dict[str, Any]) -> float | None:
+    side = quote.get("side")
+    price = quote.get("price")
+    if price is None:
+        return None
+    if side == "bid":
+        best_ask = book.get("best_ask")
+        return None if best_ask is None else round(float(best_ask) - float(price), 6)
+    if side == "ask":
+        best_bid = book.get("best_bid")
+        return None if best_bid is None else round(float(price) - float(best_bid), 6)
+    return None
+
+
+def _book_digest(book: dict[str, Any] | None, quote: dict[str, Any]) -> dict[str, Any] | None:
+    if not book:
+        return None
+    tick = float(quote.get("tick_size") or book.get("tick_size") or 0.01)
+    distance = _quote_distance(quote, book)
+    return {
+        "event_id": book.get("event_id"),
+        "timestamp": book.get("timestamp"),
+        "best_bid": book.get("best_bid"),
+        "best_ask": book.get("best_ask"),
+        "midpoint": book.get("midpoint"),
+        "spread": book.get("spread"),
+        "distance_to_fill": distance,
+        "ticks_missed": _ticks_for_distance(distance, tick),
+    }
+
+
+def _closest_book(quote: dict[str, Any], books: list[dict[str, Any]]) -> dict[str, Any] | None:
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for book in books:
+        distance = _quote_distance(quote, book)
+        if distance is None:
+            continue
+        candidates.append((distance, book))
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[0])[1]
+
+
+def _books_after_quote(
+    quote: dict[str, Any],
+    books: list[dict[str, Any]],
+    source_book: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    quote_time = parse_dt(quote.get("timestamp"))
+    if quote_time is None and source_book is not None:
+        quote_time = parse_dt(source_book.get("timestamp"))
+    source_event_id = quote.get("source_event_id")
+    rows: list[dict[str, Any]] = []
+    for book in books:
+        if source_event_id and book.get("event_id") == source_event_id:
+            continue
+        book_time = parse_dt(book.get("timestamp"))
+        if quote_time is not None and book_time is not None and book_time < quote_time:
+            continue
+        rows.append(book)
+    return rows
+
+
+def _quote_close_event(
+    quote: dict[str, Any],
+    fills_by_quote: dict[str, dict[str, Any]],
+    cancels_by_quote: dict[str, dict[str, Any]],
+) -> tuple[str, str | None, dict[str, Any] | None]:
+    quote_id = str(quote.get("quote_id") or "")
+    fill = fills_by_quote.get(quote_id)
+    if fill:
+        return "filled", fill.get("reason") or "simulated_fill", fill
+    cancel = cancels_by_quote.get(quote_id)
+    if cancel:
+        return "cancelled", str(cancel.get("reason") or "cancelled"), cancel
+    return "open", "open_at_replay_end", None
+
+
+def _quote_lifecycle_row(
+    quote: dict[str, Any],
+    token_books: list[dict[str, Any]],
+    source_book: dict[str, Any] | None,
+    fills_by_quote: dict[str, dict[str, Any]],
+    cancels_by_quote: dict[str, dict[str, Any]],
+    *,
+    assume_expiry_cancel: bool = False,
+) -> dict[str, Any]:
+    outcome, cancel_reason, close_event = _quote_close_event(quote, fills_by_quote, cancels_by_quote)
+    quote_time = parse_dt(quote.get("timestamp"))
+    if quote_time is None and source_book is not None:
+        quote_time = parse_dt(source_book.get("timestamp"))
+    expires_at = parse_dt(quote.get("expires_at"))
+    close_time = parse_dt(close_event.get("timestamp")) if close_event else None
+    if assume_expiry_cancel and outcome == "open" and expires_at is not None:
+        outcome = "cancelled"
+        cancel_reason = "quote_expired"
+        close_time = expires_at
+    lifetime_end = close_time or expires_at
+    subsequent = _books_after_quote(quote, token_books, source_book)
+    during_lifetime: list[dict[str, Any]] = []
+    after_lifetime: list[dict[str, Any]] = []
+    for book in subsequent:
+        book_time = parse_dt(book.get("timestamp"))
+        if lifetime_end is not None and book_time is not None and book_time <= lifetime_end:
+            during_lifetime.append(book)
+        elif lifetime_end is not None and book_time is not None and book_time > lifetime_end:
+            after_lifetime.append(book)
+        elif lifetime_end is None:
+            during_lifetime.append(book)
+    closest_during = _closest_book(quote, during_lifetime)
+    closest_subsequent = _closest_book(quote, subsequent)
+    closest_after = _closest_book(quote, after_lifetime)
+    tick = float(quote.get("tick_size") or (source_book or {}).get("tick_size") or 0.01)
+    during_distance = _quote_distance(quote, closest_during) if closest_during else None
+    subsequent_distance = _quote_distance(quote, closest_subsequent) if closest_subsequent else None
+    after_distance = _quote_distance(quote, closest_after) if closest_after else None
+    would_fill_during = during_distance is not None and during_distance <= 0
+    would_fill_after = after_distance is not None and after_distance <= 0
+    placement_context = quote.get("placement_context")
+    if not isinstance(placement_context, dict):
+        placement_context = _book_digest(source_book, quote) or {
+            "midpoint": quote.get("midpoint"),
+            "spread": quote.get("spread"),
+            "tick_size": tick,
+            "source_event_id": quote.get("source_event_id"),
+        }
+    lifetime_seconds = None
+    if quote_time and lifetime_end:
+        lifetime_seconds = round((lifetime_end - quote_time).total_seconds(), 3)
+    return {
+        "quote_id": quote.get("quote_id"),
+        "market_id": quote.get("market_id"),
+        "token_id": quote.get("token_id"),
+        "outcome": outcome,
+        "side": quote.get("side"),
+        "price": quote.get("price"),
+        "size": quote.get("size"),
+        "quote_mode": quote.get("quote_mode") or "unknown",
+        "quote_expiry_seconds": quote.get("quote_expiry_seconds"),
+        "placed_at": quote.get("timestamp") or (source_book or {}).get("timestamp"),
+        "expires_at": quote.get("expires_at"),
+        "closed_at": close_event.get("timestamp") if close_event else (expires_at.isoformat() if assume_expiry_cancel and expires_at else None),
+        "cancel_reason": None if outcome == "filled" else cancel_reason,
+        "fill_reason": cancel_reason if outcome == "filled" else None,
+        "source_event_id": quote.get("source_event_id"),
+        "close_event_id": close_event.get("evidence_event_id") if close_event else None,
+        "placement_context": placement_context,
+        "closest_during_lifetime": _book_digest(closest_during, quote),
+        "closest_subsequent": _book_digest(closest_subsequent, quote),
+        "ticks_missed": _ticks_for_distance(during_distance, tick),
+        "best_subsequent_ticks_missed": _ticks_for_distance(subsequent_distance, tick),
+        "would_fill_during_lifetime": would_fill_during,
+        "would_have_filled_under_longer_expiry": bool(
+            outcome != "filled" and cancel_reason == "quote_expired" and not would_fill_during and would_fill_after
+        ),
+        "quote_lifetime_seconds": lifetime_seconds,
+    }
+
+
+def _quote_lifecycle(
+    quotes: list[dict[str, Any]],
+    books: list[dict[str, Any]],
+    fills: list[dict[str, Any]],
+    risk_events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped_books = _books_by_token(books)
+    by_event = _books_by_event_id(books)
+    fills_by_quote = _event_by_quote_id([row for row in fills if row.get("type") == "simulated_fill"])
+    cancels_by_quote = _event_by_quote_id(risk_events, "quote_cancelled")
+    rows: list[dict[str, Any]] = []
+    for quote in quotes:
+        if quote.get("type") != "virtual_quote":
+            continue
+        token_id = str(quote.get("token_id") or "")
+        source_book = by_event.get(str(quote.get("source_event_id") or ""))
+        rows.append(_quote_lifecycle_row(quote, grouped_books.get(token_id, []), source_book, fills_by_quote, cancels_by_quote))
+    return rows
+
+
+def _midpoint_range_ticks(books: list[dict[str, Any]], tick: float) -> float:
+    mids = [float(book["midpoint"]) for book in books if book.get("midpoint") is not None]
+    if len(mids) < 2 or tick <= 0:
+        return 0.0
+    return round((max(mids) - min(mids)) / tick, 6)
+
+
+def _fill_opportunity_analysis(
+    lifecycles: list[dict[str, Any]],
+    books: list[dict[str, Any]],
+    risk_events: list[dict[str, Any]],
+    policy_comparison: dict[str, Any],
+) -> dict[str, Any]:
+    missed = {"1_tick": 0, "2_ticks": 0, "more": 0, "unknown": 0}
+    by_market: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for lifecycle in lifecycles:
+        market_id = str(lifecycle.get("market_id") or "")
+        if market_id:
+            by_market[market_id].append(lifecycle)
+        if lifecycle.get("outcome") == "filled":
+            continue
+        ticks = lifecycle.get("ticks_missed")
+        if ticks is None:
+            missed["unknown"] += 1
+        elif ticks == 1:
+            missed["1_tick"] += 1
+        elif ticks == 2:
+            missed["2_ticks"] += 1
+        elif ticks > 2:
+            missed["more"] += 1
+    books_by_market_token: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    for book in books:
+        market_id = str(book.get("market_id") or "")
+        token_id = str(book.get("token_id") or "")
+        if market_id and token_id:
+            books_by_market_token[market_id][token_id].append(book)
+    useful: list[str] = []
+    static: list[str] = []
+    for market_id, rows in sorted(by_market.items()):
+        token_books = books_by_market_token.get(market_id, {})
+        movement_ticks = 0.0
+        for token_rows in token_books.values():
+            tick = float(next((row.get("tick_size") for row in token_rows if row.get("tick_size")), 0.01))
+            movement_ticks = max(movement_ticks, _midpoint_range_ticks(token_rows, tick))
+        best_ticks = [row.get("ticks_missed") for row in rows if row.get("ticks_missed") is not None]
+        min_missed = min(best_ticks) if best_ticks else None
+        closed_rows = [row for row in rows if row.get("outcome") != "open"]
+        has_useful = any(row.get("outcome") == "filled" or row.get("would_have_filled_under_longer_expiry") for row in rows)
+        if has_useful or (min_missed is not None and min_missed <= 2) or movement_ticks >= 2:
+            useful.append(market_id)
+        elif closed_rows and movement_ticks < 1:
+            static.append(market_id)
+    trade_evidence = next(
+        (row for row in reversed(risk_events) if row.get("type") == "public_trade_evidence_status"),
+        None,
+    )
+    return {
+        "expired_quotes": sum(1 for row in lifecycles if row.get("cancel_reason") == "quote_expired"),
+        "filled_quotes": sum(1 for row in lifecycles if row.get("outcome") == "filled"),
+        "cancelled_quotes": sum(1 for row in lifecycles if row.get("outcome") == "cancelled"),
+        "open_quotes": sum(1 for row in lifecycles if row.get("outcome") == "open"),
+        "missed_ticks": missed,
+        "would_have_filled_under_longer_expiry": sum(1 for row in lifecycles if row.get("would_have_filled_under_longer_expiry")),
+        "markets_with_useful_book_movement": useful,
+        "markets_too_static": static,
+        "quote_policy_assessments": {
+            mode: values.get("assessment") for mode, values in policy_comparison.get("modes", {}).items()
+        },
+        "evidence_model": trade_evidence
+        or {
+            "type": "public_trade_evidence_status",
+            "status": "book_move_only",
+            "reason": "public_trade_tape_not_recorded_in_this_run",
+        },
+    }
+
+
+def _synthetic_quote_for_mode(quote: dict[str, Any], source_book: dict[str, Any], mode: str) -> dict[str, Any] | None:
+    side = str(quote.get("side") or "bid")
+    price = quote_price_for_policy(source_book, side=side, mode=mode)
+    if price is None:
+        return None
+    synthetic = dict(quote)
+    synthetic["quote_id"] = f"{quote.get('quote_id')}:{mode}:replay"
+    synthetic["price"] = price
+    synthetic["quote_mode"] = mode
+    synthetic["timestamp"] = quote.get("timestamp") or source_book.get("timestamp")
+    if not synthetic.get("expires_at"):
+        placed = parse_dt(synthetic.get("timestamp"))
+        expiry = float(synthetic.get("quote_expiry_seconds") or 30)
+        if placed:
+            synthetic["expires_at"] = (placed + timedelta(seconds=expiry)).isoformat()
+    return synthetic
+
+
+def _policy_assessment(quote_count: int, plausible: int, adverse: int, avg_ticks: float | None) -> str:
+    if quote_count == 0:
+        return "no comparable quote evidence"
+    if plausible == 0 and avg_ticks is not None and avg_ticks > 2:
+        return "looked too passive on this evidence"
+    if plausible > 0 and adverse / plausible >= 0.5:
+        return "looked more aggressive; inspect adverse-selection evidence"
+    return "inconclusive or balanced on this evidence"
+
+
+def _policy_comparison(quotes: list[dict[str, Any]], books: list[dict[str, Any]]) -> dict[str, Any]:
+    grouped_books = _books_by_token(books)
+    by_event = _books_by_event_id(books)
+    modes: dict[str, dict[str, Any]] = {}
+    for mode in QUOTE_MODES:
+        lifecycles: list[dict[str, Any]] = []
+        for quote in quotes:
+            if quote.get("type") != "virtual_quote":
+                continue
+            source_book = by_event.get(str(quote.get("source_event_id") or ""))
+            if not source_book:
+                continue
+            synthetic = _synthetic_quote_for_mode(quote, source_book, mode)
+            if synthetic is None:
+                continue
+            token_id = str(synthetic.get("token_id") or "")
+            lifecycles.append(
+                _quote_lifecycle_row(
+                    synthetic,
+                    grouped_books.get(token_id, []),
+                    source_book,
+                    {},
+                    {},
+                    assume_expiry_cancel=True,
+                )
+            )
+        tick_values = [row.get("ticks_missed") for row in lifecycles if row.get("ticks_missed") is not None]
+        lifetimes = [
+            float(row["quote_lifetime_seconds"])
+            for row in lifecycles
+            if row.get("quote_lifetime_seconds") is not None
+        ]
+        plausible = sum(1 for row in lifecycles if row.get("would_fill_during_lifetime"))
+        adverse = 0
+        for row in lifecycles:
+            closest = row.get("closest_during_lifetime")
+            if not isinstance(closest, dict) or closest.get("ticks_missed") != 0:
+                continue
+            price = float(row.get("price") or 0.0)
+            tick = float((row.get("placement_context") or {}).get("tick_size") or 0.01)
+            midpoint = closest.get("midpoint")
+            if midpoint is None:
+                continue
+            if row.get("side") == "bid" and float(midpoint) <= price - tick:
+                adverse += 1
+            if row.get("side") == "ask" and float(midpoint) >= price + tick:
+                adverse += 1
+        avg_ticks = round(sum(float(value) for value in tick_values) / len(tick_values), 3) if tick_values else None
+        modes[mode] = {
+            "quote_count": len(lifecycles),
+            "plausible_fill_count": plausible,
+            "post_expiry_fill_count": sum(1 for row in lifecycles if row.get("would_have_filled_under_longer_expiry")),
+            "avg_ticks_missed": avg_ticks,
+            "avg_lifetime_seconds": round(sum(lifetimes) / len(lifetimes), 3) if lifetimes else None,
+            "adverse_selection_risk_count": adverse,
+            "assessment": _policy_assessment(len(lifecycles), plausible, adverse, avg_ticks),
+        }
+    return {
+        "basis": "replayed from actual quote placement book events; no profitability claim",
+        "modes": modes,
+    }
 
 
 def _market_summaries(
@@ -169,6 +555,9 @@ def build_run_state(data_dir: Path) -> dict[str, Any]:
     latest_books = _latest_books(books)
     histories = _book_history(books)
     labels_by_token = _token_lookup(watched_markets)
+    quote_lifecycle = _quote_lifecycle(quotes, books, fills, risk_events)
+    policy_comparison = _policy_comparison(quotes, books)
+    fill_opportunity = _fill_opportunity_analysis(quote_lifecycle, books, risk_events, policy_comparison)
     for token_id, book in latest_books.items():
         label = labels_by_token.get(token_id)
         if label:
@@ -230,6 +619,9 @@ def build_run_state(data_dir: Path) -> dict[str, Any]:
         "recent_quotes": quotes[-50:],
         "recent_fills": fill_rows[-50:],
         "recent_risk_events": risk_events[-50:],
+        "quote_lifecycle": quote_lifecycle,
+        "fill_opportunity": fill_opportunity,
+        "policy_comparison": policy_comparison,
         "arb_alerts": [row for row in arb_alerts if row.get("is_alert")],
         "exposures_by_market": {market: round(value, 6) for market, value in exposures.items()},
         "pnl": pnl,
@@ -246,6 +638,8 @@ def render_summary(state: dict[str, Any], *, date: str | None = None, dashboard_
     pnl = state["pnl"]
     skipped_counts = state["skipped_counts"]
     risk_counts = state["risk_counts"]
+    opportunity = state.get("fill_opportunity", {})
+    comparison = state.get("policy_comparison", {})
     lines = [
         f"# Polymarket Paper Run Summary{f' - {date}' if date else ''}",
         "",
@@ -290,6 +684,40 @@ def render_summary(state: dict[str, Any], *, date: str | None = None, dashboard_
             lines.append(f"- {event_type}: {count}")
     else:
         lines.append("- None.")
+    lines.extend(["", "## Fill Opportunity Analysis", ""])
+    missed = opportunity.get("missed_ticks") or {}
+    lines.append(f"- Expired quotes: {opportunity.get('expired_quotes', 0)}")
+    lines.append(f"- Filled quotes: {opportunity.get('filled_quotes', 0)}")
+    lines.append(f"- Cancelled quotes: {opportunity.get('cancelled_quotes', 0)}")
+    lines.append(f"- Missed by 1 tick: {missed.get('1_tick', 0)}")
+    lines.append(f"- Missed by 2 ticks: {missed.get('2_ticks', 0)}")
+    lines.append(f"- Missed by more: {missed.get('more', 0)}")
+    lines.append(f"- Would have filled under longer expiry: {opportunity.get('would_have_filled_under_longer_expiry', 0)}")
+    useful = opportunity.get("markets_with_useful_book_movement") or []
+    static = opportunity.get("markets_too_static") or []
+    lines.append(f"- Markets with useful book movement: {', '.join(useful) if useful else 'none'}")
+    lines.append(f"- Markets too static: {', '.join(static) if static else 'none'}")
+    evidence_model = opportunity.get("evidence_model") or {}
+    lines.append(
+        "- Fill evidence model: "
+        f"{evidence_model.get('status', 'unknown')} ({evidence_model.get('reason', 'no reason recorded')})"
+    )
+    lines.extend(["", "## Policy Comparison", ""])
+    lines.append(f"- Basis: {comparison.get('basis', 'not enough quote placement evidence')}")
+    modes = comparison.get("modes") or {}
+    if modes:
+        for mode, values in sorted(modes.items()):
+            lines.append(
+                "- "
+                f"{mode}: plausible_fills={values.get('plausible_fill_count', 0)}, "
+                f"longer_expiry_fills={values.get('post_expiry_fill_count', 0)}, "
+                f"avg_ticks_missed={values.get('avg_ticks_missed')}, "
+                f"avg_lifetime_seconds={values.get('avg_lifetime_seconds')}, "
+                f"adverse_selection_flags={values.get('adverse_selection_risk_count', 0)}, "
+                f"assessment={values.get('assessment')}"
+            )
+    else:
+        lines.append("- No comparable quote policies.")
     lines.extend(["", "## Checks Run", ""])
     checks = [row for row in state["recent_risk_events"] if row.get("type") == "checks_run"]
     if checks:

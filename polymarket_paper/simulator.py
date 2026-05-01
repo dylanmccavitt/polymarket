@@ -15,11 +15,80 @@ def _round_tick(value: float, tick: float) -> float:
     return round(ticks * tick, 6)
 
 
+QUOTE_MODES = ("best_bid", "one_tick_inside", "midpoint_when_spread_allows")
+
+
+def quote_price_for_policy(snapshot: dict[str, Any], *, side: str, mode: str) -> float | None:
+    if mode not in QUOTE_MODES:
+        raise ValueError(f"unknown quote mode: {mode}")
+    bid = snapshot.get("best_bid")
+    ask = snapshot.get("best_ask")
+    midpoint = snapshot.get("midpoint")
+    tick = float(snapshot.get("tick_size") or 0.01)
+    if bid is None or ask is None or midpoint is None:
+        return None
+    best_bid = float(bid)
+    best_ask = float(ask)
+    mid = float(midpoint)
+    if side == "bid":
+        if mode == "best_bid":
+            return best_bid
+        if mode == "midpoint_when_spread_allows":
+            candidate = _round_tick(mid, tick)
+            if best_bid < candidate < best_ask:
+                return candidate
+        candidate = _round_tick(min(best_ask - tick, best_bid + tick), tick)
+        return candidate if best_bid < candidate < best_ask else best_bid
+    if side == "ask":
+        if mode == "best_bid":
+            return best_ask
+        if mode == "midpoint_when_spread_allows":
+            candidate = _round_tick(mid, tick)
+            if best_bid < candidate < best_ask:
+                return candidate
+        candidate = _round_tick(max(best_bid + tick, best_ask - tick), tick)
+        return candidate if best_bid < candidate < best_ask else best_ask
+    raise ValueError(f"unknown quote side: {side}")
+
+
+def _placement_context(snapshot: dict[str, Any], *, side: str, price: float, mode: str) -> dict[str, Any]:
+    tick = float(snapshot.get("tick_size") or 0.01)
+    bid = snapshot.get("best_bid")
+    ask = snapshot.get("best_ask")
+    spread = snapshot.get("spread")
+    context: dict[str, Any] = {
+        "quote_mode": mode,
+        "best_bid": bid,
+        "best_ask": ask,
+        "best_bid_size": snapshot.get("best_bid_size"),
+        "best_ask_size": snapshot.get("best_ask_size"),
+        "midpoint": snapshot.get("midpoint"),
+        "spread": spread,
+        "tick_size": tick,
+        "source_event_id": snapshot.get("event_id"),
+    }
+    if spread is not None:
+        context["spread_ticks"] = round(float(spread) / tick, 6) if tick else None
+    if side == "bid" and bid is not None:
+        context["placement_distance_from_bid_ticks"] = round((price - float(bid)) / tick, 6) if tick else None
+    if side == "ask" and ask is not None:
+        context["placement_distance_from_ask_ticks"] = round((float(ask) - price) / tick, 6) if tick else None
+    return context
+
+
 @dataclass
 class PaperSimulator:
     risk: RiskState
     quote_size: float
+    quote_mode: str = "one_tick_inside"
+    quote_expiry_seconds: int = QUOTE_EXPIRY_SECONDS
     active_quotes: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.quote_mode not in QUOTE_MODES:
+            raise ValueError(f"unknown quote mode: {self.quote_mode}")
+        if self.quote_expiry_seconds <= 0:
+            raise ValueError("quote_expiry_seconds must be positive")
 
     def generate_quotes(self, snapshot: dict[str, Any], *, now=None) -> list[dict[str, Any]]:
         current = now or utc_now()
@@ -30,9 +99,9 @@ class PaperSimulator:
         tick = float(snapshot.get("tick_size") or 0.01)
         if bid is None or ask is None or midpoint is None or spread is None:
             return []
-        price = _round_tick(min(float(ask) - tick, float(bid) + tick), tick)
-        if price <= 0 or price >= float(ask):
-            price = float(bid)
+        price = quote_price_for_policy(snapshot, side="bid", mode=self.quote_mode)
+        if price is None or price <= 0 or price >= float(ask):
+            return []
         size = max(self.quote_size, float(snapshot.get("min_order_size") or self.quote_size))
         decision = self.risk.can_quote(snapshot, price=price, size=size, now=current)
         if not decision.allowed:
@@ -51,8 +120,11 @@ class PaperSimulator:
             "midpoint": midpoint,
             "spread": spread,
             "tick_size": tick,
-            "reason": "paper_maker_bid_inside_or_at_touch",
-            "expires_at": (current + timedelta(seconds=QUOTE_EXPIRY_SECONDS)).isoformat(),
+            "quote_mode": self.quote_mode,
+            "quote_expiry_seconds": self.quote_expiry_seconds,
+            "reason": f"paper_maker_bid_{self.quote_mode}",
+            "expires_at": (current + timedelta(seconds=self.quote_expiry_seconds)).isoformat(),
+            "placement_context": _placement_context(snapshot, side="bid", price=price, mode=self.quote_mode),
             "risk": decision.details,
             "source_event_id": snapshot["event_id"],
         }
@@ -60,8 +132,8 @@ class PaperSimulator:
         quotes = [quote]
         held = self.risk.shares(str(snapshot["market_id"]), str(snapshot["token_id"]))
         if held > 0:
-            ask_price = _round_tick(max(float(bid) + tick, float(ask) - tick), tick)
-            if ask_price <= float(bid):
+            ask_price = quote_price_for_policy(snapshot, side="ask", mode=self.quote_mode)
+            if ask_price is None or ask_price <= float(bid):
                 ask_price = float(ask)
             ask_size = min(size, held)
             ask_id = f"quote:{snapshot['event_id']}:ask"
@@ -71,7 +143,8 @@ class PaperSimulator:
                 "side": "ask",
                 "price": ask_price,
                 "size": ask_size,
-                "reason": "paper_maker_inventory_ask_inside_or_at_touch",
+                "reason": f"paper_maker_inventory_ask_{self.quote_mode}",
+                "placement_context": _placement_context(snapshot, side="ask", price=ask_price, mode=self.quote_mode),
             }
             self.active_quotes[ask_id] = ask_quote
             quotes.append(ask_quote)
@@ -96,6 +169,8 @@ class PaperSimulator:
                         "reason": cancel.reason,
                         "details": cancel.details,
                         "evidence_event_id": snapshot.get("event_id"),
+                        "quote_mode": quote.get("quote_mode"),
+                        "expires_at": quote.get("expires_at"),
                     }
                 )
                 self.active_quotes.pop(quote_id, None)

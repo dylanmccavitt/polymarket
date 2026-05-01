@@ -105,6 +105,9 @@ class ReplayDashboardParityTests(unittest.TestCase):
             self.assertEqual(state["market_summaries"][0]["question"], "Fixture market?")
             self.assertEqual(state["market_summaries"][0]["outcomes"][0]["outcome"], "Yes")
             self.assertEqual(len(state["market_summaries"][0]["outcomes"][0]["history"]), 2)
+            self.assertIn("fill_opportunity", state)
+            self.assertIn("policy_comparison", state)
+            self.assertIn("Fill Opportunity Analysis", (run_dir / "summary.md").read_text(encoding="utf-8"))
             self.assertEqual(state["latest_books"]["yes"]["display_name"], "Fixture market? - Yes")
             self.assertIn("Mark-to-mid PnL", (run_dir / "summary.md").read_text(encoding="utf-8"))
 
@@ -118,6 +121,197 @@ class ReplayDashboardParityTests(unittest.TestCase):
             state = build_run_state(run_dir)
 
             self.assertEqual(state["status"], "active_or_partial")
+
+    def test_quote_lifecycle_replays_missed_tick_and_longer_expiry_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = ensure_run_dir(Path(tmp))
+            append_jsonl(
+                run_dir / "markets.jsonl",
+                {
+                    "type": "market_filter",
+                    "selected": True,
+                    "normalized": {
+                        "market_id": "m1",
+                        "question": "Will the fixture move?",
+                        "slug": "fixture-move",
+                        "token_ids": ["yes"],
+                        "outcomes": ["Yes"],
+                    },
+                },
+            )
+            append_jsonl(
+                run_dir / "books.jsonl",
+                {
+                    "type": "book_snapshot",
+                    "event_id": "book-place",
+                    "timestamp": "2026-05-01T12:00:00+00:00",
+                    "market_id": "m1",
+                    "token_id": "yes",
+                    "outcome": "Yes",
+                    "best_bid": 0.49,
+                    "best_ask": 0.53,
+                    "midpoint": 0.51,
+                    "spread": 0.04,
+                    "tick_size": 0.01,
+                },
+            )
+            append_jsonl(
+                run_dir / "quotes.jsonl",
+                {
+                    "type": "virtual_quote",
+                    "quote_id": "q-expired",
+                    "timestamp": "2026-05-01T12:00:00+00:00",
+                    "market_id": "m1",
+                    "token_id": "yes",
+                    "outcome": "Yes",
+                    "side": "bid",
+                    "price": 0.5,
+                    "size": 5,
+                    "midpoint": 0.51,
+                    "spread": 0.04,
+                    "tick_size": 0.01,
+                    "quote_mode": "one_tick_inside",
+                    "quote_expiry_seconds": 30,
+                    "expires_at": "2026-05-01T12:00:30+00:00",
+                    "source_event_id": "book-place",
+                },
+            )
+            append_jsonl(
+                run_dir / "books.jsonl",
+                {
+                    "type": "book_snapshot",
+                    "event_id": "book-one-tick-away",
+                    "timestamp": "2026-05-01T12:00:25+00:00",
+                    "market_id": "m1",
+                    "token_id": "yes",
+                    "outcome": "Yes",
+                    "best_bid": 0.49,
+                    "best_ask": 0.51,
+                    "midpoint": 0.5,
+                    "spread": 0.02,
+                    "tick_size": 0.01,
+                },
+            )
+            append_jsonl(
+                run_dir / "risk_events.jsonl",
+                {
+                    "type": "quote_cancelled",
+                    "timestamp": "2026-05-01T12:00:31+00:00",
+                    "quote_id": "q-expired",
+                    "market_id": "m1",
+                    "token_id": "yes",
+                    "reason": "quote_expired",
+                    "evidence_event_id": "book-one-tick-away",
+                },
+            )
+            append_jsonl(
+                run_dir / "books.jsonl",
+                {
+                    "type": "book_snapshot",
+                    "event_id": "book-after-expiry-fillable",
+                    "timestamp": "2026-05-01T12:00:45+00:00",
+                    "market_id": "m1",
+                    "token_id": "yes",
+                    "outcome": "Yes",
+                    "best_bid": 0.48,
+                    "best_ask": 0.5,
+                    "midpoint": 0.49,
+                    "spread": 0.02,
+                    "tick_size": 0.01,
+                },
+            )
+            append_jsonl(run_dir / "risk_events.jsonl", {"type": "run_completed", "timestamp": "2026-05-01T12:01:00+00:00"})
+
+            state = generate_report(run_dir, date="2026-05-01")
+            lifecycle = state["quote_lifecycle"][0]
+
+            self.assertEqual(lifecycle["quote_id"], "q-expired")
+            self.assertEqual(lifecycle["outcome"], "cancelled")
+            self.assertEqual(lifecycle["cancel_reason"], "quote_expired")
+            self.assertEqual(lifecycle["ticks_missed"], 1)
+            self.assertEqual(lifecycle["closest_during_lifetime"]["event_id"], "book-one-tick-away")
+            self.assertEqual(lifecycle["closest_subsequent"]["event_id"], "book-after-expiry-fillable")
+            self.assertTrue(lifecycle["would_have_filled_under_longer_expiry"])
+            self.assertEqual(state["fill_opportunity"]["expired_quotes"], 1)
+            self.assertEqual(state["fill_opportunity"]["missed_ticks"]["1_tick"], 1)
+            self.assertIn("m1", state["fill_opportunity"]["markets_with_useful_book_movement"])
+            self.assertIn("midpoint_when_spread_allows", state["policy_comparison"]["modes"])
+            self.assertEqual(state["policy_comparison"]["modes"]["best_bid"]["avg_ticks_missed"], 2.0)
+            self.assertEqual(state["policy_comparison"]["modes"]["one_tick_inside"]["avg_ticks_missed"], 1.0)
+            self.assertEqual(state["policy_comparison"]["modes"]["one_tick_inside"]["post_expiry_fill_count"], 1)
+            self.assertEqual(state["policy_comparison"]["modes"]["midpoint_when_spread_allows"]["plausible_fill_count"], 1)
+            summary = (run_dir / "summary.md").read_text(encoding="utf-8")
+            self.assertIn("## Fill Opportunity Analysis", summary)
+            self.assertIn("## Policy Comparison", summary)
+
+    def test_static_market_is_reported_from_quote_diagnostics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = ensure_run_dir(Path(tmp))
+            append_jsonl(
+                run_dir / "markets.jsonl",
+                {
+                    "type": "market_filter",
+                    "selected": True,
+                    "normalized": {
+                        "market_id": "m-static",
+                        "question": "Static fixture?",
+                        "slug": "static-fixture",
+                        "token_ids": ["yes"],
+                        "outcomes": ["Yes"],
+                    },
+                },
+            )
+            for index in range(3):
+                append_jsonl(
+                    run_dir / "books.jsonl",
+                    {
+                        "type": "book_snapshot",
+                        "event_id": f"book-static-{index}",
+                        "timestamp": f"2026-05-01T12:00:{index * 10:02d}+00:00",
+                        "market_id": "m-static",
+                        "token_id": "yes",
+                        "outcome": "Yes",
+                        "best_bid": 0.4,
+                        "best_ask": 0.46,
+                        "midpoint": 0.43,
+                        "spread": 0.06,
+                        "tick_size": 0.01,
+                    },
+                )
+            append_jsonl(
+                run_dir / "quotes.jsonl",
+                {
+                    "type": "virtual_quote",
+                    "quote_id": "q-static",
+                    "timestamp": "2026-05-01T12:00:00+00:00",
+                    "market_id": "m-static",
+                    "token_id": "yes",
+                    "side": "bid",
+                    "price": 0.41,
+                    "size": 5,
+                    "tick_size": 0.01,
+                    "quote_mode": "one_tick_inside",
+                    "expires_at": "2026-05-01T12:00:30+00:00",
+                    "source_event_id": "book-static-0",
+                },
+            )
+            append_jsonl(
+                run_dir / "risk_events.jsonl",
+                {
+                    "type": "quote_cancelled",
+                    "timestamp": "2026-05-01T12:00:31+00:00",
+                    "quote_id": "q-static",
+                    "market_id": "m-static",
+                    "token_id": "yes",
+                    "reason": "quote_expired",
+                    "evidence_event_id": "book-static-2",
+                },
+            )
+
+            state = build_run_state(run_dir)
+
+            self.assertIn("m-static", state["fill_opportunity"]["markets_too_static"])
+            self.assertEqual(state["fill_opportunity"]["missed_ticks"]["more"], 1)
 
 
 if __name__ == "__main__":
