@@ -665,6 +665,8 @@ Status:
 - Added `scripts/open-symphony-workspace` and `scripts/setup-linear-workflow-states.mjs`.
 - Added docs at `docs/SYMPHONY.md` and `docs/linear-track.md`.
 - Updated `AGENTS.md` so future issue work requires Linear workpad, follow-up issue creation for out-of-scope findings, checks, handoff, commit, push, and PR.
+- Disabled review-state comment dispatch after `AGE-397` was accidentally picked up in `Human Review` because the workpad comment included the configured trigger text while describing the setup.
+- Stopped the accidental Polymarket Symphony run and its spawned Codex worker; port `4003` is no longer listening.
 
 Linear issue graph:
 
@@ -692,4 +694,5 @@ Trigger rule:
 
 - Keep future issues in `Backlog` until ready.
 - After setup PR lands, move `AGE-398` to `Ready` or `Todo` to let Symphony pick up the next slice.
+- Comments do not trigger Symphony for this repo; review states are passive until the issue is moved back to an active state.
 - If a run or implementation uncovers a material out-of-scope gap, create a new child issue under `AGE-396` before moving the active issue to `Human Review`.

@@ -44,7 +44,7 @@ Symphony watches these active states:
 
 To trigger an issue, move exactly one scoped issue into `Ready` or `Todo`. Later issues should remain `Backlog` until their blockers are complete.
 
-Comments alone are context, not triggers. In review states, use a `symphony:` comment only when you intentionally want one review-state pass.
+Comments are context only and do not trigger Symphony for this repo. To restart work from review, move the issue back to `Ready`, `Todo`, `In Progress`, `Needs Fixes`, or `Rework`.
 
 ## Workspace Layout
 

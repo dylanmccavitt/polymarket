@@ -11,7 +11,7 @@
 - The launcher sources `/Users/dylanmccavitt/.config/symphony/env` when present and must pass `--i-understand-that-this-will-be-running-without-the-usual-guardrails`.
 - Symphony workspaces live under `/Users/dylanmccavitt/.codex/symphony-workspaces/polymarket`.
 - Move exactly one unblocked Linear issue to `Ready` or `Todo` when you want Symphony to work it. Keep future issues in `Backlog`.
-- Comments alone do not trigger Symphony unless the issue is in a configured review state and the comment starts with `symphony:`.
+- Comments do not trigger Symphony for this repo. Move exactly one unblocked issue to an active state when work should start.
 - Every issue must keep one persistent Linear comment with `## Codex Workpad`.
 - If completing an issue exposes an out-of-scope gap, create a child Linear issue under `AGE-396` before moving the current issue to `Human Review`.
 - Completed issue work requires code/docs, checks, handoff update, branch commit, push, and an open or updated PR unless a blocker is documented.

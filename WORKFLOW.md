@@ -17,10 +17,7 @@ tracker:
     - Cancelled
     - Duplicate
   comment_trigger: "symphony:"
-  comment_trigger_states:
-    - Human Review
-    - In Review
-    - Review
+  comment_trigger_states: []
 polling:
   interval_ms: 30000
 workspace:
@@ -93,7 +90,7 @@ Work only inside this issue workspace. Preserve unrelated local changes. Do not 
 
 The Linear issue and PR are the active per-issue handoff. Repo handoff files are durable resume context, not scratchpads.
 
-Symphony dispatch is controlled by Linear state. Comments are context only: if a comment should wake the workflow, the issue state must also move to an active state or the comment must use the `symphony:` trigger in a configured review state.
+Symphony dispatch is controlled by Linear state. Comments are context only and must not wake the workflow in review states. If a comment should wake the workflow, move the issue back to an active state.
 
 ## Status Routing
 
@@ -101,7 +98,7 @@ Symphony dispatch is controlled by Linear state. Comments are context only: if a
 - `Ready` or `Todo`: move the issue to `In Progress`, then create or refresh the workpad before code changes.
 - `In Progress`: continue from the existing workspace, workpad, branch, and PR state.
 - `Needs Fixes` or `Rework`: read all Linear and PR feedback first, add each actionable item to the workpad, fix in the same PR when possible, then revalidate.
-- `Human Review`, `In Review`, or `Review`: do not modify code unless new feedback moved the issue back to an active state or a `symphony:` comment explicitly requests one review-state pass.
+- `Human Review`, `In Review`, or `Review`: do not modify code unless new feedback moved the issue back to an active state.
 - `Merging`: merge only if a PR is attached, review feedback is resolved or explicitly answered, required checks/evidence are current, and the human moved the issue to this state.
 - `Done`, `Closed`, `Canceled`, `Cancelled`, or `Duplicate`: do nothing.
 
