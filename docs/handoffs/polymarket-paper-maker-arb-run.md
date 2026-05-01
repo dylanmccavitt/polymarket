@@ -4,9 +4,9 @@
 
 Implemented the first usable paper-only Polymarket system in `/Users/dylanmccavitt/polymarket` on branch `paper-maker-arb-run`.
 
-The repo is now a local git repository with private GitHub remote `origin` at `https://github.com/DylanMcCavitt/polymarket.git`. The original docs were committed first on `main`, then this work continued on dedicated branch `paper-maker-arb-run`. PR `https://github.com/DylanMcCavitt/polymarket/pull/1` is merged into `main`.
+The repo is now a local git repository with private GitHub remote `origin` at `https://github.com/DylanMcCavitt/polymarket.git`. The original docs were committed first on `main`, then this work continued on dedicated branch `paper-maker-arb-run`. PR #1, PR #2, and PR #3 are merged into `main`.
 
-Linear/Symphony track status: `AGE-397` is Done. `AGE-398` is the next active implementation issue for the same-run suitability brake and should use its own issue workspace, branch, and PR.
+Linear/Symphony track status: `AGE-397` and `AGE-398` are Done. `AGE-408` is a backlog follow-up to calibrate same-run gate thresholds. `AGE-399` remains the main next track issue when the user wants to continue with the WebSocket-first public market state engine. No child issue is currently active.
 
 Implemented:
 
@@ -27,6 +27,7 @@ Implemented:
 - Paper-only quote modes: `best_bid`, `one_tick_inside`, and `midpoint_when_spread_allows`.
 - Configurable paper quote expiry via `--quote-expiry-seconds`.
 - Prior-replay entry gating via `--entry-gating-data-dir`, blocking new bid entries on markets classified `risky_concentrated` or `too_adverse`.
+- Same-run entry gating that blocks later bid entries after runtime concentration or adverse-selection thresholds while preserving inventory-reducing exits.
 - Strategy comparison report over the same placement/book evidence, without profitability claims.
 - Architecture doc at `docs/architecture.md`.
 
@@ -34,13 +35,13 @@ Important environment note: this machine has `python3`, but no `python` shim. Co
 
 ## Next
 
-Review the entry-gated dashboard at `http://127.0.0.1:8770` and `data/runs/2026-05-01-entry-gated-v1/summary.md`.
+Review the same-run gated dashboard at `http://127.0.0.1:8771` and `data/runs/2026-05-01-same-run-gated-v1/summary.md`.
 
-Recommended next implementation slice:
+Recommended next track routing:
 
-1. Add a same-run suitability brake so markets that become `risky_concentrated` or `too_adverse` during the active run stop receiving new bid entries without waiting for the next replay.
-2. Keep inventory-reducing exits enabled on gated markets.
-3. Preserve the current prior-replay entry gate and use `data/runs/2026-05-01-entry-gated-v1` as the next prior-state source.
+1. Keep `AGE-399` as the main next implementation issue for the WebSocket-first public market state engine.
+2. Keep `AGE-408` in Backlog unless the same-run fill-share thresholds need calibration before longer paper sessions.
+3. Do not activate later live-readiness or daemon issues until their blockers are complete.
 4. Do not loosen quote placement or lower the exit profit target until open inventory and stuck lots improve.
 
 ## Risks
@@ -748,8 +749,9 @@ Comparison against `2026-05-01-entry-gated-v1`:
 
 Next recommendation:
 
-- Move `AGE-398` to Human Review after PR checks are current.
-- Keep `AGE-399` as the next main track issue, but review `AGE-408` before any longer paper soak if the one-fill/two-fill fill-share gates look too conservative in the dashboard.
+- `AGE-398` is Done and PR #3 is merged.
+- Keep `AGE-399` as the next main track issue.
+- Review or activate `AGE-408` before any longer paper soak if the one-fill/two-fill fill-share gates look too conservative in the dashboard.
 
 ## Linear And Symphony Track Setup
 
@@ -758,8 +760,10 @@ Status:
 - Created Linear project `Polymarket: live-state paper automation`.
 - Project URL: `https://linear.app/agentcee/project/polymarket-live-state-paper-automation-a35d6bfcb6fd`.
 - Parent track issue: `AGE-396`.
-- Current setup issue: `AGE-397`, `Human Review`.
-- Next implementation issue after setup lands: `AGE-398`, `Add same-run suitability brake for paper maker entries`.
+- Setup issue: `AGE-397`, Done.
+- Latest implementation issue: `AGE-398`, Done.
+- Threshold calibration follow-up: `AGE-408`, Backlog.
+- Next main implementation issue: `AGE-399`, Backlog.
 - Added labels `track:polymarket` and `symphony`.
 - Added repo-local Symphony config at `WORKFLOW.md`.
 - Added guarded launcher at `scripts/symphony/start`; it sources `/Users/dylanmccavitt/.config/symphony/env`, requires `LINEAR_API_KEY`, and uses `--i-understand-that-this-will-be-running-without-the-usual-guardrails`.
@@ -772,10 +776,11 @@ Status:
 Linear issue graph:
 
 - `AGE-396`: parent track issue.
-- `AGE-397`: setup Linear/Symphony control plane, `Human Review`.
-- `AGE-398`: same-run suitability brake, blocked by `AGE-397`.
-- `AGE-399`: WebSocket-first public market state engine, blocked by `AGE-398`.
-- `AGE-400`: supervised automated paper daemon and kill switch, blocked by `AGE-398` and `AGE-399`.
+- `AGE-397`: setup Linear/Symphony control plane, Done.
+- `AGE-398`: same-run suitability brake, Done.
+- `AGE-408`: calibrate same-run entry gate sample thresholds, Backlog.
+- `AGE-399`: WebSocket-first public market state engine, Backlog; unblocked by completed `AGE-398`.
+- `AGE-400`: supervised automated paper daemon and kill switch, blocked by `AGE-399`.
 - `AGE-401`: active daemon state and alerts in read-only dashboard, blocked by `AGE-400`.
 - `AGE-402`: public trade-tape evidence diagnostics, blocked by `AGE-399`.
 - `AGE-403`: run-review command that opens follow-up Linear issues from evidence, blocked by `AGE-400`.
@@ -794,6 +799,6 @@ Validation command:
 Trigger rule:
 
 - Keep future issues in `Backlog` until ready.
-- After setup PR lands, move `AGE-398` to `Ready` or `Todo` to let Symphony pick up the next slice.
+- Move only one selected unblocked child issue to `Ready` or `Todo` to let Symphony pick up the next slice.
 - Comments do not trigger Symphony for this repo; review states are passive until the issue is moved back to an active state.
 - If a run or implementation uncovers a material out-of-scope gap, create a new child issue under `AGE-396` before moving the active issue to `Human Review`.
