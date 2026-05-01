@@ -3,21 +3,19 @@
 ## How To Run
 
 - Work from `/Users/dylanmccavitt/polymarket`.
-- This project is currently a paper-only Polymarket research scaffold. There is no runnable implementation yet.
-- First implementation should add a local setup command, a test/lint/typecheck harness, paper-only CLI/data commands, and a lightweight local dashboard for viewing runs.
+- This project is a paper-only Polymarket research scaffold with CLI/data commands and a lightweight local read-only dashboard.
+- This machine currently has `python3` available, but no `python` shim.
 - Prefer module execution until console scripts exist:
-  - `python -m polymarket_paper discover --limit 100 --out data/runs/YYYY-MM-DD/markets.jsonl`
-  - `python -m polymarket_paper run --minutes 90 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --out-dir data/runs/YYYY-MM-DD`
-  - `python -m polymarket_paper report --date YYYY-MM-DD --data-dir data/runs/YYYY-MM-DD`
-  - `python -m polymarket_paper dashboard --data-dir data/runs/YYYY-MM-DD --host 127.0.0.1 --port 8765`
+  - `python3 -m polymarket_paper discover --limit 100 --out data/runs/YYYY-MM-DD/markets.jsonl`
+  - `python3 -m polymarket_paper run --minutes 90 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --out-dir data/runs/YYYY-MM-DD`
+  - `python3 -m polymarket_paper report --date YYYY-MM-DD --data-dir data/runs/YYYY-MM-DD`
+  - `python3 -m polymarket_paper dashboard --data-dir data/runs/YYYY-MM-DD --host 127.0.0.1 --port 8765`
 
 ## How To Test, Lint, And Typecheck
 
-- Add these commands with the first code scaffold:
-  - Tests: `make test`
-  - Lint: `make lint`
-  - Typecheck/syntax check: `make typecheck`
-- Until the harness exists, document missing checks in the handoff.
+- Tests: `make test`
+- Lint: `make lint`
+- Typecheck/syntax check: `make typecheck`
 - Run touched execution paths directly when changing market-data, simulation, risk, or reporting code.
 - The test suite should include paper-trading signal tests, not only import/unit tests:
   - market normalization and filter decisions from fixtures

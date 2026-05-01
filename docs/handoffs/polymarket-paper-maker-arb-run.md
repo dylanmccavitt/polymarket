@@ -2,53 +2,175 @@
 
 ## Status
 
-Research and plan are drafted for a paper-only Polymarket morning run. The project now lives outside the Alpaca repo at `/Users/dylanmccavitt/polymarket`. No Polymarket implementation exists yet.
+Implemented the first usable paper-only Polymarket system in `/Users/dylanmccavitt/polymarket` on branch `paper-maker-arb-run`.
 
-The plan favors maker-first CLOB simulation plus no-arbitrage scanning over directional prediction. This is based on Polymarket's current docs for orderbooks, fees, maker rebates, liquidity rewards, market discovery, WebSockets, and geoblocking, plus the 2025 Polymarket arbitrage paper.
+The repo is now a local git repository. The original docs were committed first on `main`, then this work continued on a dedicated branch. No git remote is configured, so PR creation is blocked on adding a remote.
 
-The active plan now has Codex-ready execution goals, explicit failure definitions, blocker-avoidance rules, paper-trading signal tests, and a lightweight local dashboard in scope. It treats polling, observation-only reports, no fills, and no arbitrage alerts as valid soft outcomes when the tests, logs, dashboard, and report are complete.
+Implemented:
+
+- Python package scaffold with `python3 -m polymarket_paper`.
+- `make lint`, `make typecheck`, and `make test`.
+- Paper-only CLI commands: `discover`, `run`, `report`, and `dashboard`.
+- Read-only public Gamma market discovery and CLOB orderbook polling.
+- JSONL journals for markets, books, quotes, fills, arbitrage alerts, and risk events.
+- Strict market filters with skip reasons.
+- Conservative paper maker quote simulator.
+- Centralized risk checks for stale feeds, quote expiry, spread widening, midpoint moves, and exposure caps.
+- Binary and multi-outcome arbitrage scanner math.
+- JSONL replay report and `summary.md` generation.
+- Local read-only dashboard at `http://127.0.0.1:8765`.
+- Dashboard redesign after review feedback: market/outcome names, bid/ask/mid/spread blocks, quote/fill/risk badges, and mid-price history charts.
+- Architecture doc at `docs/architecture.md`.
+
+Important environment note: this machine has `python3`, but no `python` shim. Commands were run with `python3`.
 
 ## Next
 
-Start with `docs/plans/polymarket-paper-maker-arb-run.md`, then execute Goal 0 and Goal 1.
+Review the completed dashboard and `data/runs/2026-05-01/summary.md`.
 
-If executing Friday morning, May 1, 2026, implement the smallest paper-only CLI plus local dashboard path that can:
+Recommended next implementation slice:
 
-1. run `python -m polymarket_paper --help`
-2. provide `make lint`, `make typecheck`, and `make test`
-3. run fixture-based paper-trading signal tests for filters, fill evidence, risk stops, PnL replay, arbitrage math, and dashboard/report parity
-4. refuse live-trading behavior by default
-5. discover active markets with raw and normalized JSONL evidence
-6. poll top-of-book data if WebSocket setup blocks progress
-7. write all required JSONL files
-8. produce `summary.md` from logs
-9. serve `python -m polymarket_paper dashboard --data-dir data/runs/YYYY-MM-DD --host 127.0.0.1 --port 8765`
+1. Split smoke and long sessions into separate run IDs or subdirectories so aggregate reports do not mix short-run and long-run counters.
+2. Add richer fill-opportunity diagnostics: quote distance from touch, subsequent book movement, and why no conservative fills occurred.
+3. Decide whether to support optional WebSocket collection after polling has proven stable.
 
-After Goal 0 and Goal 1, continue through the plan in order: discovery journal, market data loop, paper quote simulator, risk module, report/replay, light local dashboard, then short smoke run before any 60 to 90 minute session.
+Do not loosen fill rules just to create activity. The no-fill outcome is useful evidence that the current bid-only maker simulator is conservative.
 
 ## Risks
 
-- This project was split out of the Alpaca repo; do not wire Polymarket into Alpaca broker/order paths.
-- `/Users/dylanmccavitt/polymarket` is not currently a git repository, so branch/worktree/PR flow is blocked until repo initialization or remote setup happens.
-- The user's environment appears to be in the United States. The plan must stay paper-only unless eligibility and platform rules are verified. Do not suggest or implement restriction bypassing.
-- Live API spot checks showed some high-volume markets with stale or near-expired dates, so market selection must hard-filter expiry and closed/resolution state.
-- Polymarket fees/rewards can vary by market; query per-market metadata rather than hard-coding fee assumptions.
-- Do not let dependency, WebSocket, frontend tooling, live API volatility, or too-few-markets issues block the whole path. Use offline fixtures, polling, observation mode, structured skip reasons, a dependency-light local dashboard, and partial-log reports as defined in the plan.
+- No remote is configured; PR creation and push are blocked until a remote is added.
+- Run data is intentionally ignored by git under `data/runs/`.
+- The run used polling mode. WebSocket support remains a later optimization.
+- Exact user-provided `python -m ...` commands cannot run on this machine until a `python` shim exists; use `python3 -m ...`.
+- The 2026-05-01 run produced no fills and no arbitrage alerts. This is a valid soft outcome, not a system failure.
+- Fees, rebates, and rewards are still reported as `unknown`; the engine preserves metadata but does not yet compute those components.
 
 ## Files
 
+- `.gitignore`
+- `Makefile`
+- `pyproject.toml`
 - `AGENTS.md`
-- `docs/plans/polymarket-paper-maker-arb-run.md`
+- `docs/architecture.md`
 - `docs/handoffs/polymarket-paper-maker-arb-run.md`
+- `polymarket_paper/__init__.py`
+- `polymarket_paper/__main__.py`
+- `polymarket_paper/adapters.py`
+- `polymarket_paper/arbitrage.py`
+- `polymarket_paper/cli.py`
+- `polymarket_paper/dashboard.py`
+- `polymarket_paper/filters.py`
+- `polymarket_paper/guardrails.py`
+- `polymarket_paper/journal.py`
+- `polymarket_paper/report.py`
+- `polymarket_paper/risk.py`
+- `polymarket_paper/runner.py`
+- `polymarket_paper/simulator.py`
+- `polymarket_paper/timeutils.py`
+- `tests/test_arbitrage.py`
+- `tests/test_filters.py`
+- `tests/test_replay_dashboard.py`
+- `tests/test_simulator.py`
+
+Run outputs, ignored by git:
+
+- `data/runs/2026-05-01/markets.jsonl`
+- `data/runs/2026-05-01/books.jsonl`
+- `data/runs/2026-05-01/quotes.jsonl`
+- `data/runs/2026-05-01/fills.jsonl`
+- `data/runs/2026-05-01/arb_alerts.jsonl`
+- `data/runs/2026-05-01/risk_events.jsonl`
+- `data/runs/2026-05-01/dashboard_state.json`
+- `data/runs/2026-05-01/summary.md`
 
 ## Checks
 
-Doc-only change. No tests were run because no implementation or harness exists yet.
+Passed:
 
-Checked current repo shape:
+- `python3 -m polymarket_paper --help`
+- `python3 -m polymarket_paper dashboard --help`
+- `make lint`
+- `make typecheck`
+- `make test`
+- `python3 -m polymarket_paper discover --limit 100 --out data/runs/2026-05-01/markets.jsonl`
+- `python3 -m polymarket_paper run --minutes 10 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --out-dir data/runs/2026-05-01 --poll-seconds 30`
+- `python3 -m polymarket_paper run --minutes 90 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --out-dir data/runs/2026-05-01`
+- `python3 -m polymarket_paper report --date 2026-05-01 --data-dir data/runs/2026-05-01 --dashboard-url http://127.0.0.1:8765`
+- `curl http://127.0.0.1:8765/state.json`
+- Headless Chrome screenshot of `http://127.0.0.1:8765`
+- Repo-wide guardrail scan found no live order, signing, wallet key, allowance, or private endpoint path.
 
-- `rg --files`
-- `find docs -maxdepth 3 -type f | sort`
-- `rg -n "dashboard|CLI path|CLI-only|only usable output|Goal 7|Goal 8" AGENTS.md docs`
-- `rg -n "signal tests|paper-trading signal|fill-evidence|dashboard/report parity" AGENTS.md docs`
-- `git status --short --branch` failed because this folder is not a git repository.
+Offline tests are fixture-based and cover:
+
+- market filters and skip reasons
+- conservative fill evidence
+- stale feed behavior
+- quote expiry
+- spread-widening cancellation
+- midpoint-move cancellation
+- exposure stops
+- PnL replay
+- arbitrage math
+- dashboard/report parity
+- active-vs-completed dashboard state across multiple runs in one directory
+
+## Smoke Run
+
+Command:
+
+`python3 -m polymarket_paper run --minutes 10 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --out-dir data/runs/2026-05-01 --poll-seconds 30`
+
+Result:
+
+- Completed.
+- Markets total: 100.
+- Markets watched: 5.
+- Markets skipped: 95.
+- Book events after smoke: 190.
+- Virtual quotes after smoke: 148.
+- Simulated fills: 0.
+- Arbitrage alerts: 0.
+- Dashboard opened from replayed JSONL state.
+
+## Long Run
+
+Command:
+
+`python3 -m polymarket_paper run --minutes 90 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --out-dir data/runs/2026-05-01`
+
+Result after aggregating the smoke run and long run in the same run directory:
+
+- Completed.
+- Markets total: 100.
+- Markets watched: 5.
+- Markets skipped: 95.
+- Book events: 1,880.
+- Virtual quotes: 1,474.
+- Simulated fills: 0.
+- Denied fills: 0.
+- Risk events: 1,475 after recording checks.
+- Arbitrage alerts: 0.
+- Mark-to-mid PnL: 0.0.
+- Spread-capture PnL: 0.0.
+- Open exposure: none.
+- Data mode: polling.
+- Observation mode: false.
+
+Skipped market reasons:
+
+- `negative_risk_skipped`: 31.
+- `expired`: 27.
+- `resolution_source_unmonitorable`: 23.
+- `low_liquidity`: 6.
+- `invalid_best_bid_ask`: 3.
+- `metadata_missing:best_bid_ask`: 2.
+- `stale_metadata`: 2.
+- `metadata_missing:end_date`: 1.
+
+## Dashboard
+
+URL:
+
+`http://127.0.0.1:8765`
+
+The dashboard server is running locally and reads from `data/runs/2026-05-01`. It is read-only over JSONL replay state.

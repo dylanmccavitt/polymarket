@@ -1,0 +1,54 @@
+# Polymarket Paper Architecture
+
+## Current System Shape
+
+This repo contains a paper-only Polymarket research scaffold. It has no wallet, signing, allowance, private endpoint, or live trading path.
+
+The runtime is a standard-library Python package exposed through `python3 -m polymarket_paper`.
+
+## Major Components
+
+- `polymarket_paper.cli`: command parser for `discover`, `run`, `report`, and `dashboard`.
+- `polymarket_paper.adapters`: read-only public HTTP adapters for Gamma market discovery and CLOB orderbook polling.
+- `polymarket_paper.filters`: market normalization and deterministic filter decisions.
+- `polymarket_paper.runner`: orchestration for discovery, polling, quote generation, arbitrage scans, and report refresh.
+- `polymarket_paper.risk`: central exposure, stale-feed, quote-expiry, spread-widening, and midpoint-move checks.
+- `polymarket_paper.simulator`: virtual maker quotes and conservative fill simulation.
+- `polymarket_paper.arbitrage`: binary and multi-outcome no-arbitrage scanner math.
+- `polymarket_paper.journal`: JSONL append/read helpers and required run-log files.
+- `polymarket_paper.report`: JSONL replay, PnL components, summary generation, and dashboard state.
+- `polymarket_paper.dashboard`: local read-only HTTP server over replayed run evidence.
+- `polymarket_paper.guardrails`: repository scan for live-trading code patterns.
+
+## Main Flows
+
+### Discovery
+
+`discover` fetches public Gamma markets, normalizes each candidate, evaluates strict filters, and writes one row per candidate to `markets.jsonl`.
+
+Every row keeps the raw API record, normalized fields, filter decision, and skip reason.
+
+### Paper Run
+
+`run` loads existing `markets.jsonl` or discovers markets, selects the filtered watchlist, records polling fallback mode, and polls public CLOB orderbooks.
+
+Each snapshot is written to `books.jsonl`. The simulator generates paper maker quotes into `quotes.jsonl` only after risk checks pass. Fills are written to `fills.jsonl` only when a later book event makes the virtual quote plausibly fillable. Risk stops, quote cancellations, fetch failures, observation mode, and run start/complete events go to `risk_events.jsonl`.
+
+If fewer than three markets pass filters, the run enters observation mode instead of relaxing filters.
+
+### Replay And Dashboard
+
+`report` and `dashboard` both use `report.build_run_state`, so the terminal summary and browser UI derive from the same JSONL evidence.
+
+The dashboard is local and read-only. It displays market names, outcomes, public book levels, mid-price history, virtual quote counts, fills, risk events, skipped-market reasons, and PnL components.
+
+## Important Invariants
+
+- Paper simulation is the only command path.
+- Public market discovery and public orderbook polling are read-only.
+- No command accepts credentials or account identifiers.
+- Every selected market must pass explicit filters before quoting.
+- Every simulated fill must cite an evidence event ID from the market-data log.
+- Reports and dashboard state must be reproducible after process exit from JSONL logs.
+- Missing metadata is conservative: skip or report `unknown`, never assume favorable values.
+- Dashboard rendering must not mutate run logs, strategy decisions, or trading behavior.
