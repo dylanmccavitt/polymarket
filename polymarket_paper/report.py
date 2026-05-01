@@ -1037,6 +1037,7 @@ def render_summary(state: dict[str, Any], *, date: str | None = None, dashboard_
     opportunity = state.get("fill_opportunity", {})
     quality = state.get("fill_quality", {})
     comparison = state.get("policy_comparison", {})
+    round_trip = state.get("round_trip_pnl", {})
     lines = [
         f"# Polymarket Paper Run Summary{f' - {date}' if date else ''}",
         "",
@@ -1060,6 +1061,21 @@ def render_summary(state: dict[str, Any], *, date: str | None = None, dashboard_
         f"- Fees: {pnl['fees_estimated']}",
         f"- Rebates: {pnl['rebates_estimated']}",
         f"- Rewards: {pnl['rewards_estimated']}",
+        "",
+        "## Round Trip PnL",
+        "",
+        f"- Entry fills: `{round_trip.get('entry_fill_count', 0)}`",
+        f"- Exit fills: `{round_trip.get('exit_fill_count', 0)}`",
+        f"- Round trips: `{round_trip.get('round_trip_count', 0)}`",
+        f"- Realized round-trip PnL: `{round_trip.get('realized_pnl', 0.0)}`",
+        f"- Average profit per share: `{round_trip.get('average_profit_per_share', 0.0)}`",
+        f"- Average hold seconds: `{round_trip.get('average_hold_seconds')}`",
+        f"- Fill-to-flip rate: `{round_trip.get('fill_to_flip_rate', 0.0)}`",
+        f"- Open inventory size: `{round_trip.get('open_inventory_size', 0.0)}`",
+        f"- Open inventory lots: `{round_trip.get('open_inventory_lots', 0)}`",
+        f"- Stuck inventory lots: `{round_trip.get('stuck_inventory_lots', 0)}`",
+        f"- Oldest open seconds: `{round_trip.get('oldest_open_seconds')}`",
+        f"- Unmatched exit size: `{round_trip.get('unmatched_exit_size', 0.0)}`",
         "",
         "## Exposure",
         "",

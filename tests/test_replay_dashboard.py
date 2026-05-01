@@ -183,6 +183,11 @@ class ReplayDashboardParityTests(unittest.TestCase):
             self.assertEqual(round_trip["open_inventory_size"], 0.0)
             self.assertEqual(state["round_trips"][0]["entry_evidence_event_id"], "book-entry")
             self.assertEqual(state["round_trips"][0]["exit_evidence_event_id"], "book-exit")
+            reported = generate_report(run_dir)
+            summary = (run_dir / "summary.md").read_text(encoding="utf-8")
+            self.assertIn("## Round Trip PnL", summary)
+            self.assertIn("Realized round-trip PnL", summary)
+            self.assertEqual(reported["round_trip_pnl"], build_run_state(run_dir)["round_trip_pnl"])
 
     def test_round_trip_replay_reports_stuck_open_inventory(self):
         with tempfile.TemporaryDirectory() as tmp:

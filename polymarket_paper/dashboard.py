@@ -142,6 +142,24 @@ INDEX_HTML = """<!doctype html>
           <table><tbody id="pnl"></tbody></table>
         </div>
         <div class="panel">
+          <div class="panel-head"><div class="label">Round Trip PnL</div></div>
+          <table><tbody id="round-trip"></tbody></table>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div class="label">Open Inventory</div></div>
+          <table>
+            <thead><tr><th>Token</th><th>Size</th><th>Age</th><th>Status</th></tr></thead>
+            <tbody id="open-inventory"></tbody>
+          </table>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div class="label">Recent Round Trips</div></div>
+          <table>
+            <thead><tr><th>Token</th><th>Size</th><th>PnL</th><th>Hold</th></tr></thead>
+            <tbody id="round-trips"></tbody>
+          </table>
+        </div>
+        <div class="panel">
           <div class="panel-head"><div class="label">Risk Events</div></div>
           <table><tbody id="risks"></tbody></table>
         </div>
@@ -260,6 +278,34 @@ INDEX_HTML = """<!doctype html>
       };
       return rows(compactRows);
     }
+    function roundTripRows(summary) {
+      const compactRows = {
+        entry_fills: summary?.entry_fill_count ?? 0,
+        exit_fills: summary?.exit_fill_count ?? 0,
+        round_trips: summary?.round_trip_count ?? 0,
+        realized_pnl: summary?.realized_pnl ?? 0,
+        avg_profit_per_share: summary?.average_profit_per_share ?? 0,
+        avg_hold_seconds: summary?.average_hold_seconds ?? '—',
+        fill_to_flip_rate: summary?.fill_to_flip_rate ?? 0,
+        open_inventory_size: summary?.open_inventory_size ?? 0,
+        stuck_inventory_lots: summary?.stuck_inventory_lots ?? 0,
+        unmatched_exit_size: summary?.unmatched_exit_size ?? 0
+      };
+      return rows(compactRows);
+    }
+    function openInventoryRows(lots) {
+      return (lots || []).map(lot => {
+        const token = `${lot.market_id || ''} / ${shortToken(lot.token_id)}`;
+        const cls = lot.status === 'stuck' ? 'stale' : 'active';
+        return `<tr>${td(`<code>${esc(token)}</code><div class="subtle">${esc(lot.entry_evidence_event_id || '')}</div>`)}${td(fmt(lot.open_size))}${td(fmt(lot.age_seconds))}${td(badge(lot.status || 'open', cls))}</tr>`;
+      }).join('') || '<tr><td colspan="4" class="subtle">No open inventory.</td></tr>';
+    }
+    function roundTripDetailRows(trips) {
+      return (trips || []).slice(-10).reverse().map(trip => {
+        const token = `${trip.market_id || ''} / ${shortToken(trip.token_id)}`;
+        return `<tr>${td(`<code>${esc(token)}</code><div class="subtle">${esc(trip.entry_evidence_event_id || '')} → ${esc(trip.exit_evidence_event_id || '')}</div>`)}${td(fmt(trip.size))}${td(fmt(trip.realized_pnl))}${td(fmt(trip.hold_seconds))}</tr>`;
+      }).join('') || '<tr><td colspan="4" class="subtle">No matched exits.</td></tr>';
+    }
     function suitabilityRows(suitability) {
       return (suitability || []).map(row => {
         return `<tr>${td(`<code>${esc(row.market_id)}</code><div class="subtle">${esc(row.reason || '')}</div>`)}${td(esc(row.classification))}${td(fmt(row.fill_count))}${td(fmt(row.fill_share))}${td(fmt(row.adverse_selection_flags))}</tr>`;
@@ -320,10 +366,14 @@ INDEX_HTML = """<!doctype html>
         metric('Fills', counts.fills),
         metric('Books', counts.books),
         metric('Risk Events', counts.risk_events),
-        metric('Mark PnL', fmt(state.pnl?.mark_to_mid_pnl))
+        metric('Mark PnL', fmt(state.pnl?.mark_to_mid_pnl)),
+        metric('Realized PnL', fmt(state.round_trip_pnl?.realized_pnl))
       ].join('');
       document.getElementById('market-board').innerHTML = (state.market_summaries || []).map(marketCard).join('') || '<div class="empty">No selected markets.</div>';
       document.getElementById('pnl').innerHTML = rows(state.pnl);
+      document.getElementById('round-trip').innerHTML = roundTripRows(state.round_trip_pnl);
+      document.getElementById('open-inventory').innerHTML = openInventoryRows(state.open_inventory_lots);
+      document.getElementById('round-trips').innerHTML = roundTripDetailRows(state.round_trips);
       document.getElementById('risks').innerHTML = rows(state.risk_counts);
       document.getElementById('opportunity').innerHTML = opportunityRows(state.fill_opportunity);
       document.getElementById('quality').innerHTML = fillQualityRows(state.fill_quality);
