@@ -649,3 +649,47 @@ Next strategy change:
 - Add same-run suitability gating from live replay state or runtime counters so a market that crosses concentration/adverse thresholds stops receiving new bid entries immediately.
 - Keep inventory-reducing exits enabled on those same-run gated markets.
 - Do not lower the exit profit target or increase quote aggressiveness until open inventory and stuck lots improve.
+
+## Linear And Symphony Track Setup
+
+Status:
+
+- Created Linear project `Polymarket: live-state paper automation`.
+- Project URL: `https://linear.app/agentcee/project/polymarket-live-state-paper-automation-a35d6bfcb6fd`.
+- Parent track issue: `AGE-396`.
+- Current setup issue: `AGE-397`, `Human Review`.
+- Next implementation issue after setup lands: `AGE-398`, `Add same-run suitability brake for paper maker entries`.
+- Added labels `track:polymarket` and `symphony`.
+- Added repo-local Symphony config at `WORKFLOW.md`.
+- Added guarded launcher at `scripts/symphony/start`; it sources `/Users/dylanmccavitt/.config/symphony/env`, requires `LINEAR_API_KEY`, and uses `--i-understand-that-this-will-be-running-without-the-usual-guardrails`.
+- Added `scripts/open-symphony-workspace` and `scripts/setup-linear-workflow-states.mjs`.
+- Added docs at `docs/SYMPHONY.md` and `docs/linear-track.md`.
+- Updated `AGENTS.md` so future issue work requires Linear workpad, follow-up issue creation for out-of-scope findings, checks, handoff, commit, push, and PR.
+
+Linear issue graph:
+
+- `AGE-396`: parent track issue.
+- `AGE-397`: setup Linear/Symphony control plane, `Human Review`.
+- `AGE-398`: same-run suitability brake, blocked by `AGE-397`.
+- `AGE-399`: WebSocket-first public market state engine, blocked by `AGE-398`.
+- `AGE-400`: supervised automated paper daemon and kill switch, blocked by `AGE-398` and `AGE-399`.
+- `AGE-401`: active daemon state and alerts in read-only dashboard, blocked by `AGE-400`.
+- `AGE-402`: public trade-tape evidence diagnostics, blocked by `AGE-399`.
+- `AGE-403`: run-review command that opens follow-up Linear issues from evidence, blocked by `AGE-400`.
+- `AGE-404`: execution adapter boundary with live trading disabled, blocked by `AGE-400`.
+- `AGE-405`: live-readiness checklist, geoblock check, and explicit opt-in gate, blocked by `AGE-404`.
+- `AGE-406`: multi-session automated paper soak, blocked by `AGE-400`, `AGE-401`, `AGE-403`, and `AGE-405`.
+
+Startup command:
+
+`cd /Users/dylanmccavitt/polymarket && scripts/symphony/start`
+
+Validation command:
+
+`cd /Users/dylanmccavitt/polymarket && scripts/symphony/start --check`
+
+Trigger rule:
+
+- Keep future issues in `Backlog` until ready.
+- After setup PR lands, move `AGE-398` to `Ready` or `Todo` to let Symphony pick up the next slice.
+- If a run or implementation uncovers a material out-of-scope gap, create a new child issue under `AGE-396` before moving the active issue to `Human Review`.

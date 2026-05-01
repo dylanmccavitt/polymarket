@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${SYMPHONY_WORKSPACE_ROOT:-/Users/dylanmccavitt/.codex/symphony-workspaces/polymarket}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  scripts/open-symphony-workspace AGE-398 [finder|zed|terminal|print]
+  scripts/open-symphony-workspace --list
+
+Environment:
+  SYMPHONY_WORKSPACE_ROOT overrides the default workspace root.
+USAGE
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "${1:-}" == "--list" ]]; then
+  find "$ROOT" -maxdepth 1 -mindepth 1 -type d -print 2>/dev/null | sort
+  exit 0
+fi
+
+ISSUE="${1:-}"
+TARGET="${2:-print}"
+
+if [[ -z "$ISSUE" ]]; then
+  usage >&2
+  exit 2
+fi
+
+ISSUE_UPPER="$(printf '%s' "$ISSUE" | tr '[:lower:]' '[:upper:]')"
+WORKSPACE="$ROOT/$ISSUE_UPPER"
+
+if [[ ! -d "$WORKSPACE" ]]; then
+  echo "Workspace not found: $WORKSPACE" >&2
+  echo "Known workspaces:" >&2
+  find "$ROOT" -maxdepth 1 -mindepth 1 -type d -print 2>/dev/null | sort >&2 || true
+  exit 1
+fi
+
+case "$TARGET" in
+  finder)
+    echo "Opening $WORKSPACE"
+    open "$WORKSPACE"
+    ;;
+  zed)
+    echo "Opening $WORKSPACE in Zed"
+    open -a Zed "$WORKSPACE"
+    ;;
+  terminal)
+    echo "Opening $WORKSPACE in Terminal"
+    open -a Terminal "$WORKSPACE"
+    ;;
+  print)
+    printf '%s\n' "$WORKSPACE"
+    ;;
+  *)
+    echo "Unknown target: $TARGET" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
