@@ -553,6 +553,102 @@ def _fill_quality_from_markouts(markouts: list[dict[str, Any]]) -> dict[str, Any
     }
 
 
+def _configured_market_fill_cap(risk_events: list[dict[str, Any]]) -> int:
+    for event in reversed(risk_events):
+        if event.get("type") != "run_started":
+            continue
+        cap = event.get("max_fills_per_market")
+        if isinstance(cap, int):
+            return cap
+        try:
+            return int(cap)
+        except (TypeError, ValueError):
+            return 8
+    return 8
+
+
+def _average_missed_ticks(markouts: list[dict[str, Any]]) -> float | None:
+    missed_ticks: list[float] = []
+    for row in markouts:
+        tick = float(row.get("tick_size") or 0.01)
+        if tick <= 0:
+            continue
+        for values in (row.get("horizons") or {}).values():
+            markout = values.get("markout") if isinstance(values, dict) else None
+            if markout is None:
+                continue
+            missed_ticks.append(max(0.0, -1 * float(markout) / tick))
+    if not missed_ticks:
+        return None
+    return round(sum(missed_ticks) / len(missed_ticks), 3)
+
+
+def _market_suitability(
+    watched_markets: list[dict[str, Any]],
+    quotes: list[dict[str, Any]],
+    fills: list[dict[str, Any]],
+    fill_markouts: list[dict[str, Any]],
+    quote_lifecycle: list[dict[str, Any]],
+    fill_opportunity: dict[str, Any],
+    risk_events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    quote_counts = Counter(str(row.get("market_id")) for row in quotes if row.get("market_id"))
+    fill_counts = Counter(str(row.get("market_id")) for row in fills if row.get("market_id"))
+    expired_counts = Counter(
+        str(row.get("market_id"))
+        for row in quote_lifecycle
+        if row.get("market_id") and row.get("cancel_reason") == "quote_expired"
+    )
+    markouts_by_market: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in fill_markouts:
+        market_id = str(row.get("market_id") or "")
+        if market_id:
+            markouts_by_market[market_id].append(row)
+    total_fills = sum(fill_counts.values())
+    static_markets = set(fill_opportunity.get("markets_too_static") or [])
+    market_cap = _configured_market_fill_cap(risk_events)
+    rows: list[dict[str, Any]] = []
+    for market in watched_markets:
+        market_id = str(market.get("market_id") or "")
+        quote_count = quote_counts[market_id]
+        fill_count = fill_counts[market_id]
+        fill_share = round(fill_count / total_fills, 6) if total_fills else 0.0
+        market_markouts = markouts_by_market.get(market_id, [])
+        adverse_flags = sum(1 for row in market_markouts if row.get("adverse_selection_flag"))
+        if quote_count < 20:
+            classification = "insufficient_evidence"
+            reason = "fewer_than_20_quotes"
+        elif fill_share > 0.35:
+            classification = "risky_concentrated"
+            reason = "fill_share_above_35_percent"
+        elif fill_count > market_cap:
+            classification = "risky_concentrated"
+            reason = "fill_count_above_market_cap"
+        elif fill_count > 0 and adverse_flags >= fill_count / 2:
+            classification = "too_adverse"
+            reason = "adverse_selection_flags_at_least_half_of_fills"
+        elif market_id in static_markets:
+            classification = "too_static"
+            reason = "static_book_movement"
+        else:
+            classification = "candidate"
+            reason = "balanced_fill_activity"
+        rows.append(
+            {
+                "market_id": market_id,
+                "quote_count": quote_count,
+                "fill_count": fill_count,
+                "fill_share": fill_share,
+                "adverse_selection_flags": adverse_flags,
+                "avg_ticks_missed": _average_missed_ticks(market_markouts),
+                "expired_quotes": expired_counts[market_id],
+                "classification": classification,
+                "reason": reason,
+            }
+        )
+    return rows
+
+
 def _market_summaries(
     watched_markets: list[dict[str, Any]],
     latest_books: dict[str, dict[str, Any]],
@@ -673,6 +769,15 @@ def build_run_state(data_dir: Path) -> dict[str, Any]:
     fill_opportunity = _fill_opportunity_analysis(quote_lifecycle, books, risk_events, policy_comparison)
     fill_markouts = _fill_markout_rows(fill_rows, books)
     fill_quality = _fill_quality_from_markouts(fill_markouts)
+    market_suitability = _market_suitability(
+        watched_markets,
+        quotes,
+        fill_rows,
+        fill_markouts,
+        quote_lifecycle,
+        fill_opportunity,
+        risk_events,
+    )
     for token_id, book in latest_books.items():
         label = labels_by_token.get(token_id)
         if label:
@@ -737,6 +842,7 @@ def build_run_state(data_dir: Path) -> dict[str, Any]:
         "quote_lifecycle": quote_lifecycle,
         "fill_opportunity": fill_opportunity,
         "fill_quality": fill_quality,
+        "market_suitability": market_suitability,
         "policy_comparison": policy_comparison,
         "arb_alerts": [row for row in arb_alerts if row.get("is_alert")],
         "exposures_by_market": {market: round(value, 6) for market, value in exposures.items()},
@@ -827,6 +933,20 @@ def render_summary(state: dict[str, Any], *, date: str | None = None, dashboard_
     lines.append(f"- 30s average markout: `{(horizons.get('30s') or {}).get('average_markout', 0.0)}`")
     lines.append(f"- 60s average markout: `{(horizons.get('60s') or {}).get('average_markout', 0.0)}`")
     lines.append(f"- 120s average markout: `{(horizons.get('120s') or {}).get('average_markout', 0.0)}`")
+    lines.extend(["", "## Market Suitability", ""])
+    suitability = state.get("market_suitability") or []
+    if suitability:
+        for row in suitability:
+            lines.append(
+                "- "
+                f"{row.get('market_id')}: classification={row.get('classification')}, "
+                f"fills={row.get('fill_count')}, "
+                f"fill_share={row.get('fill_share')}, "
+                f"adverse_flags={row.get('adverse_selection_flags')}, "
+                f"reason={row.get('reason')}"
+            )
+    else:
+        lines.append("- No watched markets.")
     lines.extend(["", "## Policy Comparison", ""])
     lines.append(f"- Basis: {comparison.get('basis', 'not enough quote placement evidence')}")
     modes = comparison.get("modes") or {}

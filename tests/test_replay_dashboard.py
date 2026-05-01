@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from polymarket_paper.journal import append_jsonl, ensure_run_dir
@@ -375,6 +376,94 @@ class ReplayDashboardParityTests(unittest.TestCase):
 
             self.assertIn("m-static", state["fill_opportunity"]["markets_too_static"])
             self.assertEqual(state["fill_opportunity"]["missed_ticks"]["more"], 1)
+
+    def test_market_suitability_classifies_concentration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = ensure_run_dir(Path(tmp))
+            append_jsonl(
+                run_dir / "risk_events.jsonl",
+                {
+                    "type": "run_started",
+                    "timestamp": "2026-05-01T12:00:00+00:00",
+                    "max_fills_per_market": 8,
+                },
+            )
+            for market_id, token_id in (("m-concentrated", "yes-c"), ("m-balanced", "yes-b")):
+                append_jsonl(
+                    run_dir / "markets.jsonl",
+                    {
+                        "type": "market_filter",
+                        "selected": True,
+                        "normalized": {
+                            "market_id": market_id,
+                            "question": f"{market_id} fixture?",
+                            "slug": market_id,
+                            "token_ids": [token_id],
+                            "outcomes": ["Yes"],
+                        },
+                    },
+                )
+                for index in range(24):
+                    append_jsonl(
+                        run_dir / "quotes.jsonl",
+                        {
+                            "type": "virtual_quote",
+                            "quote_id": f"{market_id}-q-{index}",
+                            "timestamp": f"2026-05-01T12:{index:02d}:00+00:00",
+                            "market_id": market_id,
+                            "token_id": token_id,
+                            "side": "bid",
+                            "price": 0.5,
+                            "size": 5,
+                            "tick_size": 0.01,
+                        },
+                    )
+
+            def append_fill_with_markouts(market_id: str, token_id: str, index: int, *, adverse: bool) -> None:
+                timestamp = datetime(2026, 5, 1, 13, 0, tzinfo=timezone.utc) + timedelta(minutes=index * 10)
+                midpoint = 0.48 if adverse else 0.51
+                append_jsonl(
+                    run_dir / "fills.jsonl",
+                    {
+                        "type": "simulated_fill",
+                        "quote_id": f"{market_id}-fill-{index}",
+                        "timestamp": timestamp.isoformat(),
+                        "market_id": market_id,
+                        "token_id": token_id,
+                        "side": "bid",
+                        "price": 0.5,
+                        "size": 5,
+                        "evidence_event_id": f"{market_id}-book-fill-{index}",
+                    },
+                )
+                for seconds in (0, 30, 60, 120):
+                    append_jsonl(
+                        run_dir / "books.jsonl",
+                        {
+                            "type": "book_snapshot",
+                            "event_id": f"{market_id}-book-{index}-{seconds}",
+                            "timestamp": (timestamp + timedelta(seconds=seconds)).isoformat(),
+                            "market_id": market_id,
+                            "token_id": token_id,
+                            "outcome": "Yes",
+                            "best_bid": round(midpoint - 0.01, 2),
+                            "best_ask": round(midpoint + 0.01, 2),
+                            "midpoint": midpoint,
+                            "spread": 0.02,
+                            "tick_size": 0.01,
+                        },
+                    )
+
+            for index in range(9):
+                append_fill_with_markouts("m-concentrated", "yes-c", index, adverse=index < 6)
+            for index in range(2):
+                append_fill_with_markouts("m-balanced", "yes-b", index, adverse=False)
+
+            state = build_run_state(run_dir)
+            suitability = {row["market_id"]: row for row in state["market_suitability"]}
+
+            self.assertEqual(suitability["m-concentrated"]["classification"], "risky_concentrated")
+            self.assertEqual(suitability["m-balanced"]["classification"], "candidate")
 
 
 if __name__ == "__main__":

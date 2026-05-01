@@ -154,6 +154,13 @@ INDEX_HTML = """<!doctype html>
           <table><tbody id="quality"></tbody></table>
         </div>
         <div class="panel">
+          <div class="panel-head"><div class="label">Market Suitability</div></div>
+          <table>
+            <thead><tr><th>Market</th><th>Class</th><th>Fills</th><th>Share</th><th>Adverse</th></tr></thead>
+            <tbody id="suitability"></tbody>
+          </table>
+        </div>
+        <div class="panel">
           <div class="panel-head"><div class="label">Policy Comparison</div></div>
           <table><tbody id="policy"></tbody></table>
         </div>
@@ -253,6 +260,11 @@ INDEX_HTML = """<!doctype html>
       };
       return rows(compactRows);
     }
+    function suitabilityRows(suitability) {
+      return (suitability || []).map(row => {
+        return `<tr>${td(`<code>${esc(row.market_id)}</code><div class="subtle">${esc(row.reason || '')}</div>`)}${td(esc(row.classification))}${td(fmt(row.fill_count))}${td(fmt(row.fill_share))}${td(fmt(row.adverse_selection_flags))}</tr>`;
+      }).join('') || '<tr><td colspan="5" class="subtle">No watched markets.</td></tr>';
+    }
     function policyRows(comparison) {
       const modes = comparison?.modes || {};
       const entries = Object.entries(modes).sort().map(([mode, values]) => {
@@ -315,6 +327,7 @@ INDEX_HTML = """<!doctype html>
       document.getElementById('risks').innerHTML = rows(state.risk_counts);
       document.getElementById('opportunity').innerHTML = opportunityRows(state.fill_opportunity);
       document.getElementById('quality').innerHTML = fillQualityRows(state.fill_quality);
+      document.getElementById('suitability').innerHTML = suitabilityRows(state.market_suitability);
       document.getElementById('policy').innerHTML = policyRows(state.policy_comparison);
       document.getElementById('skips').innerHTML = rows(state.skipped_counts);
       document.getElementById('books').innerHTML = Object.values(state.latest_books || {}).slice(-40).map(b => {
