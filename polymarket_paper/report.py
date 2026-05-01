@@ -649,6 +649,27 @@ def _market_suitability(
     return rows
 
 
+def _same_run_entry_gates(risk_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for event in risk_events:
+        if event.get("type") != "same_run_entry_gate":
+            continue
+        rows.append(
+            {
+                "timestamp": event.get("timestamp"),
+                "market_id": event.get("market_id"),
+                "token_id": event.get("token_id"),
+                "outcome": event.get("outcome"),
+                "classification": event.get("classification"),
+                "reason": event.get("reason"),
+                "threshold": event.get("threshold"),
+                "source_evidence_event_id": event.get("source_evidence_event_id"),
+                "details": event.get("details") or {},
+            }
+        )
+    return rows
+
+
 def _market_summaries(
     watched_markets: list[dict[str, Any]],
     latest_books: dict[str, dict[str, Any]],
@@ -1017,6 +1038,7 @@ def build_run_state(data_dir: Path) -> dict[str, Any]:
         "round_trips": round_trip_replay["round_trips"][-50:],
         "open_inventory_lots": round_trip_replay["open_inventory_lots"],
         "market_suitability": market_suitability,
+        "same_run_entry_gates": _same_run_entry_gates(risk_events),
         "policy_comparison": policy_comparison,
         "arb_alerts": [row for row in arb_alerts if row.get("is_alert")],
         "exposures_by_market": {market: round(value, 6) for market, value in exposures.items()},
@@ -1038,6 +1060,7 @@ def render_summary(state: dict[str, Any], *, date: str | None = None, dashboard_
     quality = state.get("fill_quality", {})
     comparison = state.get("policy_comparison", {})
     round_trip = state.get("round_trip_pnl", {})
+    same_run_gates = state.get("same_run_entry_gates") or []
     lines = [
         f"# Polymarket Paper Run Summary{f' - {date}' if date else ''}",
         "",
@@ -1095,6 +1118,20 @@ def render_summary(state: dict[str, Any], *, date: str | None = None, dashboard_
     if risk_counts:
         for event_type, count in sorted(risk_counts.items()):
             lines.append(f"- {event_type}: {count}")
+    else:
+        lines.append("- None.")
+    lines.extend(["", "## Same-Run Entry Gates", ""])
+    if same_run_gates:
+        for row in same_run_gates:
+            lines.append(
+                "- "
+                f"{row.get('market_id')}: classification={row.get('classification')}, "
+                f"threshold={row.get('threshold')}, "
+                f"reason={row.get('reason')}, "
+                f"token={row.get('token_id') or 'market'}, "
+                f"outcome={row.get('outcome') or 'unknown'}, "
+                f"source_evidence={row.get('source_evidence_event_id')}"
+            )
     else:
         lines.append("- None.")
     lines.extend(["", "## Fill Opportunity Analysis", ""])

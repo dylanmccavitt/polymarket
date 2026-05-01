@@ -116,6 +116,41 @@ class PaperSimulator:
         decision = self.risk.can_quote(snapshot, price=0.0, size=0.0, now=now)
         return decision.allowed or decision.reason in {"market_exposure_cap", "total_exposure_cap"}
 
+    def _same_run_entry_gate(self, market_id: str) -> dict[str, Any] | None:
+        return self.risk.same_run_entry_gate_for_market(market_id)
+
+    def pop_risk_events(self) -> list[dict[str, Any]]:
+        return self.risk.pop_same_run_entry_gate_events()
+
+    def _cancel_same_run_gated_bid_quotes(self, *, now, evidence_event_id: Any | None) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for quote_id, quote in list(self.active_quotes.items()):
+            if quote.get("side") != "bid":
+                continue
+            gate = self._same_run_entry_gate(str(quote.get("market_id") or ""))
+            if gate is None:
+                continue
+            events.append(
+                {
+                    "type": "quote_cancelled",
+                    "timestamp": now.isoformat(),
+                    "quote_id": quote_id,
+                    "market_id": quote["market_id"],
+                    "token_id": quote["token_id"],
+                    "reason": "same_run_entry_gate",
+                    "details": {
+                        "classification": gate.get("classification"),
+                        "threshold": gate.get("threshold"),
+                        "gate_reason": gate.get("reason"),
+                    },
+                    "evidence_event_id": evidence_event_id,
+                    "quote_mode": quote.get("quote_mode"),
+                    "expires_at": quote.get("expires_at"),
+                }
+            )
+            self.active_quotes.pop(quote_id, None)
+        return events
+
     def generate_quotes(self, snapshot: dict[str, Any], *, now=None) -> list[dict[str, Any]]:
         current = now or utc_now()
         bid = snapshot.get("best_bid")
@@ -129,7 +164,7 @@ class PaperSimulator:
         size = max(self.quote_size, float(snapshot.get("min_order_size") or self.quote_size))
         market_id = str(snapshot["market_id"])
         price = quote_price_for_policy(snapshot, side="bid", mode=self.quote_mode)
-        if market_id not in self.entry_blocked_markets:
+        if market_id not in self.entry_blocked_markets and self._same_run_entry_gate(market_id) is None:
             if price is not None and price > 0 and price < float(ask):
                 decision = self.risk.can_quote(snapshot, price=price, size=size, now=current)
                 if decision.allowed:
@@ -155,8 +190,10 @@ class PaperSimulator:
                         "risk": decision.details,
                         "source_event_id": snapshot["event_id"],
                     }
-                    self.active_quotes[quote_id] = quote
-                    quotes.append(quote)
+                    self.risk.record_entry_quote_for_same_run_gate(quote)
+                    if self._same_run_entry_gate(market_id) is None:
+                        self.active_quotes[quote_id] = quote
+                        quotes.append(quote)
         held = self.risk.shares(str(snapshot["market_id"]), str(snapshot["token_id"]))
         if held > 0 and self._can_place_exit_quote(snapshot, now=current):
             ask_price = quote_price_for_policy(snapshot, side="ask", mode=self.quote_mode)
@@ -195,6 +232,9 @@ class PaperSimulator:
         current = now or utc_now()
         fills: list[dict[str, Any]] = []
         risk_events: list[dict[str, Any]] = []
+        self.risk.observe_book_for_same_run_gate(snapshot, now=current)
+        risk_events.extend(self.risk.pop_same_run_entry_gate_events())
+        risk_events.extend(self._cancel_same_run_gated_bid_quotes(now=current, evidence_event_id=snapshot.get("event_id")))
         for quote_id, quote in list(self.active_quotes.items()):
             if quote.get("market_id") != snapshot.get("market_id") or quote.get("token_id") != snapshot.get("token_id"):
                 continue
@@ -221,6 +261,8 @@ class PaperSimulator:
                 continue
             fills.append(fill)
             self.active_quotes.pop(quote_id, None)
+            risk_events.extend(self.risk.pop_same_run_entry_gate_events())
+            risk_events.extend(self._cancel_same_run_gated_bid_quotes(now=current, evidence_event_id=snapshot.get("event_id")))
         return fills, risk_events
 
     def _try_fill(self, quote: dict[str, Any], snapshot: dict[str, Any], *, now) -> dict[str, Any] | None:
@@ -266,6 +308,11 @@ class PaperSimulator:
             side,
             float(quote["price"]),
             float(quote["size"]),
+            timestamp=now.isoformat(),
+            evidence_event_id=snapshot.get("event_id"),
+            quote_id=quote.get("quote_id"),
+            outcome=quote.get("outcome"),
+            tick_size=quote.get("tick_size"),
         )
         return {
             "type": "simulated_fill",

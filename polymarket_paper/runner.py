@@ -198,6 +198,8 @@ def run_paper_session(
                     append_jsonl(out_dir / "fills.jsonl", fill)
                 if not observation_mode and snapshot.best_bid is not None and snapshot.best_ask is not None:
                     quotes = simulator.generate_quotes(row)
+                    for risk_event in simulator.pop_risk_events():
+                        append_jsonl(out_dir / "risk_events.jsonl", risk_event)
                     for quote in quotes:
                         append_jsonl(out_dir / "quotes.jsonl", quote)
         for market in markets:
