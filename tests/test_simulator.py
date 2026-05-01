@@ -130,6 +130,61 @@ class SimulatorTrustTests(unittest.TestCase):
         self.assertEqual(denied[0]["reason"], "token_fill_cap")
         self.assertEqual(denied[0]["evidence_event_id"], "book-fill-2")
 
+    def test_inventory_exit_quote_requires_min_profit_target(self):
+        risk = RiskState(max_total_exposure=100)
+        risk.record_fill("m1", "yes", "bid", price=0.5, size=5)
+        sim = PaperSimulator(
+            risk=risk,
+            quote_size=5,
+            quote_expiry_seconds=60,
+            min_exit_profit_ticks=2,
+        )
+
+        too_cheap = sim.generate_quotes(
+            snapshot(best_bid=0.49, best_ask=0.51, midpoint=0.5, spread=0.02),
+            now=NOW,
+        )
+        self.assertEqual([quote for quote in too_cheap if quote["side"] == "ask"], [])
+
+        profitable = sim.generate_quotes(
+            snapshot(event_id="book-profitable", best_bid=0.51, best_ask=0.54, midpoint=0.525, spread=0.03),
+            now=NOW + timedelta(seconds=1),
+        )
+        asks = [quote for quote in profitable if quote["side"] == "ask"]
+
+        self.assertEqual(len(asks), 1)
+        self.assertEqual(asks[0]["side"], "ask")
+        self.assertGreaterEqual(asks[0]["price"], 0.52)
+        self.assertEqual(asks[0]["exit_context"]["average_entry_price"], 0.5)
+        self.assertEqual(asks[0]["exit_context"]["min_exit_price"], 0.52)
+        self.assertEqual(asks[0]["exit_context"]["min_exit_profit_ticks"], 2)
+
+    def test_inventory_exit_fill_is_not_blocked_by_entry_fill_cap(self):
+        risk = RiskState(max_total_exposure=100, max_market_fills=1, max_token_fills=1)
+        risk.record_fill("m1", "yes", "bid", price=0.5, size=5)
+        sim = PaperSimulator(
+            risk=risk,
+            quote_size=5,
+            quote_expiry_seconds=60,
+            min_exit_profit_ticks=1,
+        )
+
+        sim.generate_quotes(
+            snapshot(event_id="book-exit-quote", best_bid=0.51, best_ask=0.54, midpoint=0.525, spread=0.03),
+            now=NOW,
+        )
+        fills, risk_events = sim.process_snapshot(
+            snapshot(event_id="book-exit-fill", best_bid=0.53, best_ask=0.55, midpoint=0.54, spread=0.02),
+            now=NOW + timedelta(seconds=5),
+        )
+
+        exit_fills = [fill for fill in fills if fill["side"] == "ask"]
+        self.assertEqual(risk_events, [])
+        self.assertEqual(len(exit_fills), 1)
+        self.assertEqual(exit_fills[0]["type"], "simulated_fill")
+        self.assertEqual(exit_fills[0]["reason"], "book_bid_traded_through_ask")
+        self.assertEqual(exit_fills[0]["evidence_event_id"], "book-exit-fill")
+
     def test_quote_policy_variants_choose_distinct_maker_prices(self):
         wide = snapshot(best_bid=0.49, best_ask=0.53, midpoint=0.51, spread=0.04)
 

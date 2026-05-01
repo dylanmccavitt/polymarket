@@ -82,6 +82,7 @@ class PaperSimulator:
     quote_size: float
     quote_mode: str = "one_tick_inside"
     quote_expiry_seconds: int = QUOTE_EXPIRY_SECONDS
+    min_exit_profit_ticks: int = 1
     active_quotes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -89,6 +90,30 @@ class PaperSimulator:
             raise ValueError(f"unknown quote mode: {self.quote_mode}")
         if self.quote_expiry_seconds <= 0:
             raise ValueError("quote_expiry_seconds must be positive")
+        if self.min_exit_profit_ticks < 0:
+            raise ValueError("min_exit_profit_ticks must be nonnegative")
+
+    def _exit_context(self, snapshot: dict[str, Any], *, ask_price: float, held: float) -> dict[str, Any] | None:
+        market_id = str(snapshot["market_id"])
+        token_id = str(snapshot["token_id"])
+        tick = float(snapshot.get("tick_size") or 0.01)
+        average_entry = self.risk.average_entry_price(market_id, token_id)
+        if average_entry is None:
+            return None
+        min_exit_price = round(average_entry + self.min_exit_profit_ticks * tick, 6)
+        if ask_price < min_exit_price:
+            return None
+        return {
+            "average_entry_price": average_entry,
+            "min_exit_price": min_exit_price,
+            "min_exit_profit_ticks": self.min_exit_profit_ticks,
+            "available_inventory": round(held, 6),
+            "expected_profit_per_share": round(ask_price - average_entry, 6),
+        }
+
+    def _can_place_exit_quote(self, snapshot: dict[str, Any], *, now) -> bool:
+        decision = self.risk.can_quote(snapshot, price=0.0, size=0.0, now=now)
+        return decision.allowed or decision.reason in {"market_exposure_cap", "total_exposure_cap"}
 
     def generate_quotes(self, snapshot: dict[str, Any], *, now=None) -> list[dict[str, Any]]:
         current = now or utc_now()
@@ -99,55 +124,68 @@ class PaperSimulator:
         tick = float(snapshot.get("tick_size") or 0.01)
         if bid is None or ask is None or midpoint is None or spread is None:
             return []
+        quotes: list[dict[str, Any]] = []
         price = quote_price_for_policy(snapshot, side="bid", mode=self.quote_mode)
-        if price is None or price <= 0 or price >= float(ask):
-            return []
         size = max(self.quote_size, float(snapshot.get("min_order_size") or self.quote_size))
-        decision = self.risk.can_quote(snapshot, price=price, size=size, now=current)
-        if not decision.allowed:
-            return []
-        quote_id = f"quote:{snapshot['event_id']}:bid"
-        quote = {
-            "type": "virtual_quote",
-            "quote_id": quote_id,
-            "timestamp": current.isoformat(),
-            "market_id": snapshot["market_id"],
-            "token_id": snapshot["token_id"],
-            "outcome": snapshot.get("outcome"),
-            "side": "bid",
-            "price": price,
-            "size": size,
-            "midpoint": midpoint,
-            "spread": spread,
-            "tick_size": tick,
-            "quote_mode": self.quote_mode,
-            "quote_expiry_seconds": self.quote_expiry_seconds,
-            "reason": f"paper_maker_bid_{self.quote_mode}",
-            "expires_at": (current + timedelta(seconds=self.quote_expiry_seconds)).isoformat(),
-            "placement_context": _placement_context(snapshot, side="bid", price=price, mode=self.quote_mode),
-            "risk": decision.details,
-            "source_event_id": snapshot["event_id"],
-        }
-        self.active_quotes[quote_id] = quote
-        quotes = [quote]
+        if price is not None and price > 0 and price < float(ask):
+            decision = self.risk.can_quote(snapshot, price=price, size=size, now=current)
+            if decision.allowed:
+                quote_id = f"quote:{snapshot['event_id']}:bid"
+                quote = {
+                    "type": "virtual_quote",
+                    "quote_id": quote_id,
+                    "timestamp": current.isoformat(),
+                    "market_id": snapshot["market_id"],
+                    "token_id": snapshot["token_id"],
+                    "outcome": snapshot.get("outcome"),
+                    "side": "bid",
+                    "price": price,
+                    "size": size,
+                    "midpoint": midpoint,
+                    "spread": spread,
+                    "tick_size": tick,
+                    "quote_mode": self.quote_mode,
+                    "quote_expiry_seconds": self.quote_expiry_seconds,
+                    "reason": f"paper_maker_bid_{self.quote_mode}",
+                    "expires_at": (current + timedelta(seconds=self.quote_expiry_seconds)).isoformat(),
+                    "placement_context": _placement_context(snapshot, side="bid", price=price, mode=self.quote_mode),
+                    "risk": decision.details,
+                    "source_event_id": snapshot["event_id"],
+                }
+                self.active_quotes[quote_id] = quote
+                quotes.append(quote)
         held = self.risk.shares(str(snapshot["market_id"]), str(snapshot["token_id"]))
-        if held > 0:
+        if held > 0 and self._can_place_exit_quote(snapshot, now=current):
             ask_price = quote_price_for_policy(snapshot, side="ask", mode=self.quote_mode)
             if ask_price is None or ask_price <= float(bid):
                 ask_price = float(ask)
             ask_size = min(size, held)
-            ask_id = f"quote:{snapshot['event_id']}:ask"
-            ask_quote = {
-                **quote,
-                "quote_id": ask_id,
-                "side": "ask",
-                "price": ask_price,
-                "size": ask_size,
-                "reason": f"paper_maker_inventory_ask_{self.quote_mode}",
-                "placement_context": _placement_context(snapshot, side="ask", price=ask_price, mode=self.quote_mode),
-            }
-            self.active_quotes[ask_id] = ask_quote
-            quotes.append(ask_quote)
+            exit_context = self._exit_context(snapshot, ask_price=ask_price, held=held)
+            if exit_context is not None:
+                ask_id = f"quote:{snapshot['event_id']}:ask"
+                ask_quote = {
+                    "type": "virtual_quote",
+                    "quote_id": ask_id,
+                    "timestamp": current.isoformat(),
+                    "market_id": snapshot["market_id"],
+                    "token_id": snapshot["token_id"],
+                    "outcome": snapshot.get("outcome"),
+                    "side": "ask",
+                    "price": ask_price,
+                    "size": ask_size,
+                    "midpoint": midpoint,
+                    "spread": spread,
+                    "tick_size": tick,
+                    "quote_mode": self.quote_mode,
+                    "quote_expiry_seconds": self.quote_expiry_seconds,
+                    "reason": f"paper_maker_inventory_exit_{self.quote_mode}",
+                    "expires_at": (current + timedelta(seconds=self.quote_expiry_seconds)).isoformat(),
+                    "placement_context": _placement_context(snapshot, side="ask", price=ask_price, mode=self.quote_mode),
+                    "exit_context": exit_context,
+                    "source_event_id": snapshot["event_id"],
+                }
+                self.active_quotes[ask_id] = ask_quote
+                quotes.append(ask_quote)
         return quotes
 
     def process_snapshot(self, snapshot: dict[str, Any], *, now=None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -217,6 +255,7 @@ class PaperSimulator:
                 "reason": decision.reason,
                 "details": decision.details,
                 "evidence_event_id": snapshot.get("event_id"),
+                "exit_context": quote.get("exit_context"),
             }
         exposure = self.risk.record_fill(
             str(quote["market_id"]),
@@ -238,6 +277,7 @@ class PaperSimulator:
             "reason": evidence_reason,
             "evidence_event_id": snapshot.get("event_id"),
             "source_quote_event_id": quote.get("source_event_id"),
+            "exit_context": quote.get("exit_context"),
             "exposure_after": exposure,
         }
 

@@ -30,6 +30,8 @@ class RiskState:
     cash_by_token: dict[str, float] = field(default_factory=dict)
     fill_counts_by_market: dict[str, int] = field(default_factory=dict)
     fill_counts_by_token: dict[str, int] = field(default_factory=dict)
+    exit_counts_by_market: dict[str, int] = field(default_factory=dict)
+    exit_counts_by_token: dict[str, int] = field(default_factory=dict)
 
     def token_key(self, market_id: str, token_id: str) -> str:
         return f"{market_id}:{token_id}"
@@ -43,6 +45,13 @@ class RiskState:
 
     def shares(self, market_id: str, token_id: str) -> float:
         return self.positions.get(self.token_key(market_id, token_id), 0.0)
+
+    def average_entry_price(self, market_id: str, token_id: str) -> float | None:
+        key = self.token_key(market_id, token_id)
+        shares = self.positions.get(key, 0.0)
+        if shares <= 0:
+            return None
+        return round(self.cash_by_token.get(key, 0.0) / shares, 6)
 
     def can_add_exposure(self, market_id: str, token_id: str, notional: float) -> RiskDecision:
         if notional < 0:
@@ -106,24 +115,24 @@ class RiskState:
         return self.can_add_exposure(market_id, token_id, price * size)
 
     def can_fill_ask(self, market_id: str, token_id: str, size: float) -> RiskDecision:
-        fill_count = self.can_add_fill_count(market_id, token_id)
-        if not fill_count.allowed:
-            return fill_count
         held = self.shares(market_id, token_id)
         if held < size:
             return RiskDecision(False, "insufficient_inventory_for_ask", {"held": held, "size": size})
         return RiskDecision(True, "allowed")
 
-    def record_fill(self, market_id: str, token_id: str, side: str, price: float, size: float) -> dict[str, float]:
+    def record_fill(self, market_id: str, token_id: str, side: str, price: float, size: float) -> dict[str, Any]:
         key = self.token_key(market_id, token_id)
         if side == "bid":
             self.positions[key] = self.positions.get(key, 0.0) + size
             self.cash_by_token[key] = self.cash_by_token.get(key, 0.0) + price * size
+            self.fill_counts_by_market[market_id] = self.fill_counts_by_market.get(market_id, 0) + 1
+            self.fill_counts_by_token[key] = self.fill_counts_by_token.get(key, 0) + 1
         elif side == "ask":
+            average_entry = self.average_entry_price(market_id, token_id) or 0.0
             self.positions[key] = self.positions.get(key, 0.0) - size
-            self.cash_by_token[key] = max(0.0, self.cash_by_token.get(key, 0.0) - price * size)
-        self.fill_counts_by_market[market_id] = self.fill_counts_by_market.get(market_id, 0) + 1
-        self.fill_counts_by_token[key] = self.fill_counts_by_token.get(key, 0) + 1
+            self.cash_by_token[key] = max(0.0, self.cash_by_token.get(key, 0.0) - average_entry * size)
+            self.exit_counts_by_market[market_id] = self.exit_counts_by_market.get(market_id, 0) + 1
+            self.exit_counts_by_token[key] = self.exit_counts_by_token.get(key, 0) + 1
         return {
             "shares": round(self.positions.get(key, 0.0), 6),
             "token_notional": round(self.cash_by_token.get(key, 0.0), 6),
@@ -131,6 +140,9 @@ class RiskState:
             "total_exposure": round(self.total_exposure(), 6),
             "market_fill_count": self.fill_counts_by_market.get(market_id, 0),
             "token_fill_count": self.fill_counts_by_token.get(key, 0),
+            "market_exit_count": self.exit_counts_by_market.get(market_id, 0),
+            "token_exit_count": self.exit_counts_by_token.get(key, 0),
+            "average_entry_price": self.average_entry_price(market_id, token_id),
         }
 
 
