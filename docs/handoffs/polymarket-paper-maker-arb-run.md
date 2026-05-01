@@ -424,3 +424,110 @@ Next:
 
 - Run the required 30-minute `data/runs/2026-05-01-exit-v1` paper session with `--min-exit-profit-ticks 1` and `--stuck-inventory-minutes 20`.
 - Generate the report, start the read-only dashboard on `http://127.0.0.1:8769`, verify `/state.json`, and compare realized exits, open inventory, concentration, and adverse-selection evidence against `data/runs/2026-05-01-risk-controls`.
+
+## Inventory Exit V1 Run
+
+Run command:
+
+`python3 -m polymarket_paper run --minutes 30 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --quote-mode one_tick_inside --quote-expiry-seconds 60 --max-fills-per-market 8 --max-fills-per-token 4 --min-exit-profit-ticks 1 --stuck-inventory-minutes 20 --out-dir data/runs/2026-05-01-exit-v1 --poll-seconds 30`
+
+Report command:
+
+`python3 -m polymarket_paper report --date 2026-05-01 --data-dir data/runs/2026-05-01-exit-v1 --dashboard-url http://127.0.0.1:8769`
+
+Dashboard:
+
+- URL: `http://127.0.0.1:8769`
+- `/state.json` verification passed with `status == completed`, `round_trip_pnl`, `round_trips`, `open_inventory_lots`, `fill_quality`, and `market_suitability`.
+- Dashboard HTML includes `Round Trip PnL`, `Open Inventory`, and `Recent Round Trips`.
+
+Counts:
+
+- Markets total: 100.
+- Markets watched: 12.
+- Markets skipped: 88.
+- Book events: 1,080.
+- Virtual quotes: 966.
+- Simulated fills: 23.
+- Denied fills: 21.
+- Risk events: 890.
+- Arbitrage alerts: 0.
+- Mark-to-mid PnL: -0.805.
+- Spread-capture PnL: 0.883333.
+- Inventory mark PnL: -1.688333.
+
+Round-trip PnL:
+
+- Entry fills: 17.
+- Exit fills: 6.
+- Round trips: 6.
+- Realized round-trip PnL: 1.05.
+- Average profit per share: 0.035.
+- Average hold seconds: 303.253398.
+- Fill-to-flip rate: 0.352941.
+- Open inventory size: 55.0.
+- Open inventory lots: 11.
+- Stuck inventory lots: 8.
+- Oldest open seconds: 1695.8706.
+- Unmatched exit size: 0.0.
+
+Fill quality:
+
+- Fills analyzed: 23.
+- Adverse-selection flags: 15.
+- Missing markouts: 0.
+- 30s average markout: -0.008478, adverse count 12, sample count 23.
+- 60s average markout: -0.006739, adverse count 12, sample count 23.
+- 120s average markout: -0.004565, adverse count 10, sample count 23.
+
+Market suitability:
+
+- `2128129`: risky_concentrated, 12 fills, fill share 0.521739, 8 adverse flags.
+- `2090808`: risky_concentrated, 10 fills, fill share 0.434783, 7 adverse flags.
+- `2116427`: candidate, 1 fill, fill share 0.043478, 0 adverse flags.
+- `2077451`: insufficient_evidence, 0 fills, fewer than 20 quotes.
+- `2074235`: insufficient_evidence, 0 fills, fewer than 20 quotes.
+
+Comparison against `2026-05-01-risk-controls`:
+
+- Risk-controls target: 26 fills, 19 denied fills, top two markets 13 / 26, mark-to-mid PnL 1.475, and no original realized round-trip metric.
+- Exit-v1: 23 fills, 21 denied fills, top two markets 22 / 23, mark-to-mid PnL -0.805, realized round-trip PnL 1.05.
+- Evidence-backed fills were preserved; every simulated fill had an `evidence_event_id`.
+- Ask exit fills occurred: 6 exit fills, 6 matched round trips, unmatched exit size 0.0.
+- Fill-to-flip rate improved above 0 at 0.352941.
+- Open inventory was still material: 55.0 open size and 8 stuck lots.
+- Top-two concentration worsened materially: 22 / 23 versus 13 / 26.
+- Denied-fill reasons stayed structured: `token_fill_cap` 11 and `market_fill_cap` 10.
+- Report/dashboard parity was preserved through `build_run_state`.
+- Retrospective replay with the new round-trip code can derive old ask exits from `2026-05-01-risk-controls`, but that run's original report did not expose realized round-trip metrics.
+
+Checks:
+
+- `python3 -m unittest tests.test_simulator`: passed.
+- `python3 -m unittest tests.test_replay_dashboard`: passed.
+- `python3 -m polymarket_paper run --help`: passed.
+- `make lint typecheck test`: passed.
+- `python3 -m polymarket_paper.guardrails`: passed.
+- `python3 -m polymarket_paper report --date 2026-05-01 --data-dir data/runs/2026-05-01-exit-v1 --dashboard-url http://127.0.0.1:8769`: passed.
+- Dashboard verification script against `http://127.0.0.1:8769/state.json`: passed.
+- `curl http://127.0.0.1:8769/ | rg "Round Trip PnL|Open Inventory|Recent Round Trips|Polymarket Paper Desk"`: passed.
+
+What worked:
+
+- The engine generated profit-targeted exit asks and evidence-backed ask fills.
+- Realized round-trip PnL was measurable and positive on matched exits.
+- Replay separated realized round-trip PnL from mark-to-mid PnL.
+- Dashboard/report state included round trips, open inventory, stuck lots, fill quality, and market suitability from the same replay path.
+
+What did not work:
+
+- Open and stuck inventory still dominated the run.
+- Concentration worsened sharply into two markets.
+- Adverse-selection flags increased to 15 / 23 fills.
+- Mark-to-mid PnL was negative despite positive realized round-trip PnL.
+
+Next strategy change:
+
+- Do not lower the exit profit target or increase quote aggressiveness yet.
+- Add entry gating from prior replay evidence: block new entries on markets classified `risky_concentrated` or `too_adverse`, while still allowing inventory-reducing exits.
+- Keep exit asks enabled and retest with the same 30-minute window after candidate-only entry gating; if exits remain profitable but fill-to-flip stays low, test shorter quote expiry before any more aggressive placement.
