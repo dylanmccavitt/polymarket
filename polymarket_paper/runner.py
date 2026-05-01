@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -8,10 +9,12 @@ from .adapters import AdapterError, fetch_book_snapshot, fetch_gamma_markets
 from .arbitrage import scan_market_from_books
 from .filters import journal_market, observation_candidates, selected_market_rows
 from .journal import append_jsonl, ensure_run_dir, read_jsonl, write_jsonl
-from .report import generate_report
+from .report import build_run_state, generate_report
 from .risk import RiskState
 from .simulator import PaperSimulator
 from .timeutils import iso_now, utc_now
+
+ENTRY_BLOCK_CLASSIFICATIONS = frozenset({"risky_concentrated", "too_adverse"})
 
 
 def discover_markets(*, limit: int, out: Path) -> int:
@@ -36,6 +39,24 @@ def _market_dict(row: dict[str, Any]) -> dict[str, Any]:
     return normalized if isinstance(normalized, dict) else {}
 
 
+def load_entry_blocked_markets(data_dir: Path | None) -> dict[str, str]:
+    if data_dir is None:
+        return {}
+    state_path = data_dir / "dashboard_state.json"
+    if state_path.exists():
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    else:
+        state = build_run_state(data_dir)
+    blocked: dict[str, str] = {}
+    for row in state.get("market_suitability") or []:
+        market_id = row.get("market_id")
+        classification = row.get("classification")
+        if market_id is None or classification not in ENTRY_BLOCK_CLASSIFICATIONS:
+            continue
+        blocked[str(market_id)] = str(classification)
+    return blocked
+
+
 def run_paper_session(
     *,
     out_dir: Path,
@@ -51,11 +72,13 @@ def run_paper_session(
     max_fills_per_token: int = 4,
     min_exit_profit_ticks: int = 1,
     stuck_inventory_minutes: float = 20.0,
+    entry_gating_data_dir: Path | None = None,
 ) -> dict[str, Any]:
     if not maker_only:
         raise ValueError("paper run only supports maker-only simulation")
     ensure_run_dir(out_dir)
     started = utc_now()
+    entry_blocked_markets = load_entry_blocked_markets(entry_gating_data_dir)
     append_jsonl(
         out_dir / "risk_events.jsonl",
         {
@@ -71,6 +94,9 @@ def run_paper_session(
             "max_fills_per_token": max_fills_per_token,
             "min_exit_profit_ticks": min_exit_profit_ticks,
             "stuck_inventory_minutes": stuck_inventory_minutes,
+            "entry_gating_data_dir": str(entry_gating_data_dir) if entry_gating_data_dir else None,
+            "entry_gating_block_classifications": sorted(ENTRY_BLOCK_CLASSIFICATIONS),
+            "entry_blocked_markets": entry_blocked_markets,
         },
     )
     append_jsonl(
@@ -91,6 +117,18 @@ def run_paper_session(
             "reason": "public_trade_tape_integration_deferred_to_keep_paper_smoke_and_offline_tests_unblocked",
         },
     )
+    if entry_gating_data_dir is not None:
+        append_jsonl(
+            out_dir / "risk_events.jsonl",
+            {
+                "type": "entry_gating_status",
+                "timestamp": iso_now(),
+                "source_data_dir": str(entry_gating_data_dir),
+                "blocked_market_count": len(entry_blocked_markets),
+                "blocked_markets": entry_blocked_markets,
+                "block_classifications": sorted(ENTRY_BLOCK_CLASSIFICATIONS),
+            },
+        )
     rows = _load_or_discover(out_dir, max(100, max_markets * 5))
     selected_rows = selected_market_rows(rows)
     observation_mode = len(selected_rows) < 3
@@ -123,6 +161,7 @@ def run_paper_session(
         quote_mode=quote_mode,
         quote_expiry_seconds=quote_expiry_seconds,
         min_exit_profit_ticks=min_exit_profit_ticks,
+        entry_blocked_markets=entry_blocked_markets,
     )
     books_by_market: dict[str, dict[str, dict[str, Any]]] = {}
     deadline = time.monotonic() + (minutes * 60)

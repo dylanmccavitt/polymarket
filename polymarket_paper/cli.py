@@ -31,6 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-fills-per-token", type=int, default=4)
     run.add_argument("--min-exit-profit-ticks", type=int, default=1)
     run.add_argument("--stuck-inventory-minutes", type=float, default=20.0)
+    run.add_argument(
+        "--entry-gating-data-dir",
+        type=Path,
+        default=None,
+        help="Prior run directory whose risky_concentrated/too_adverse markets block new bid entries.",
+    )
     run.add_argument("--maker-only", action="store_true", help="Required guardrail: only maker-style virtual quotes.")
     run.add_argument("--out-dir", type=Path, required=True)
     run.add_argument("--poll-seconds", type=float, default=30.0)
@@ -72,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
             max_fills_per_token=args.max_fills_per_token,
             min_exit_profit_ticks=args.min_exit_profit_ticks,
             stuck_inventory_minutes=args.stuck_inventory_minutes,
+            entry_gating_data_dir=args.entry_gating_data_dir,
         )
         print(f"paper run complete: {state['counts']}")
         return 0

@@ -83,6 +83,7 @@ class PaperSimulator:
     quote_mode: str = "one_tick_inside"
     quote_expiry_seconds: int = QUOTE_EXPIRY_SECONDS
     min_exit_profit_ticks: int = 1
+    entry_blocked_markets: dict[str, str] = field(default_factory=dict)
     active_quotes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -125,35 +126,37 @@ class PaperSimulator:
         if bid is None or ask is None or midpoint is None or spread is None:
             return []
         quotes: list[dict[str, Any]] = []
-        price = quote_price_for_policy(snapshot, side="bid", mode=self.quote_mode)
         size = max(self.quote_size, float(snapshot.get("min_order_size") or self.quote_size))
-        if price is not None and price > 0 and price < float(ask):
-            decision = self.risk.can_quote(snapshot, price=price, size=size, now=current)
-            if decision.allowed:
-                quote_id = f"quote:{snapshot['event_id']}:bid"
-                quote = {
-                    "type": "virtual_quote",
-                    "quote_id": quote_id,
-                    "timestamp": current.isoformat(),
-                    "market_id": snapshot["market_id"],
-                    "token_id": snapshot["token_id"],
-                    "outcome": snapshot.get("outcome"),
-                    "side": "bid",
-                    "price": price,
-                    "size": size,
-                    "midpoint": midpoint,
-                    "spread": spread,
-                    "tick_size": tick,
-                    "quote_mode": self.quote_mode,
-                    "quote_expiry_seconds": self.quote_expiry_seconds,
-                    "reason": f"paper_maker_bid_{self.quote_mode}",
-                    "expires_at": (current + timedelta(seconds=self.quote_expiry_seconds)).isoformat(),
-                    "placement_context": _placement_context(snapshot, side="bid", price=price, mode=self.quote_mode),
-                    "risk": decision.details,
-                    "source_event_id": snapshot["event_id"],
-                }
-                self.active_quotes[quote_id] = quote
-                quotes.append(quote)
+        market_id = str(snapshot["market_id"])
+        price = quote_price_for_policy(snapshot, side="bid", mode=self.quote_mode)
+        if market_id not in self.entry_blocked_markets:
+            if price is not None and price > 0 and price < float(ask):
+                decision = self.risk.can_quote(snapshot, price=price, size=size, now=current)
+                if decision.allowed:
+                    quote_id = f"quote:{snapshot['event_id']}:bid"
+                    quote = {
+                        "type": "virtual_quote",
+                        "quote_id": quote_id,
+                        "timestamp": current.isoformat(),
+                        "market_id": snapshot["market_id"],
+                        "token_id": snapshot["token_id"],
+                        "outcome": snapshot.get("outcome"),
+                        "side": "bid",
+                        "price": price,
+                        "size": size,
+                        "midpoint": midpoint,
+                        "spread": spread,
+                        "tick_size": tick,
+                        "quote_mode": self.quote_mode,
+                        "quote_expiry_seconds": self.quote_expiry_seconds,
+                        "reason": f"paper_maker_bid_{self.quote_mode}",
+                        "expires_at": (current + timedelta(seconds=self.quote_expiry_seconds)).isoformat(),
+                        "placement_context": _placement_context(snapshot, side="bid", price=price, mode=self.quote_mode),
+                        "risk": decision.details,
+                        "source_event_id": snapshot["event_id"],
+                    }
+                    self.active_quotes[quote_id] = quote
+                    quotes.append(quote)
         held = self.risk.shares(str(snapshot["market_id"]), str(snapshot["token_id"]))
         if held > 0 and self._can_place_exit_quote(snapshot, now=current):
             ask_price = quote_price_for_policy(snapshot, side="ask", mode=self.quote_mode)

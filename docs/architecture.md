@@ -11,7 +11,7 @@ The runtime is a standard-library Python package exposed through `python3 -m pol
 - `polymarket_paper.cli`: command parser for `discover`, `run`, `report`, and `dashboard`.
 - `polymarket_paper.adapters`: read-only public HTTP adapters for Gamma market discovery and CLOB orderbook polling.
 - `polymarket_paper.filters`: market normalization and deterministic filter decisions.
-- `polymarket_paper.runner`: orchestration for discovery, polling, quote generation, arbitrage scans, and report refresh.
+- `polymarket_paper.runner`: orchestration for discovery, prior-replay entry gating, polling, quote generation, arbitrage scans, and report refresh.
 - `polymarket_paper.risk`: central exposure, paper-only entry fill concentration, inventory checks for exits, stale-feed, quote-expiry, spread-widening, and midpoint-move checks.
 - `polymarket_paper.simulator`: virtual maker quotes, profit-targeted inventory exit asks, paper-only quote policy variants, configurable quote expiry, and conservative fill simulation.
 - `polymarket_paper.arbitrage`: binary and multi-outcome no-arbitrage scanner math.
@@ -32,9 +32,9 @@ Every row keeps the raw API record, normalized fields, filter decision, and skip
 
 `run` loads existing `markets.jsonl` or discovers markets, selects the filtered watchlist, records polling fallback mode, and polls public CLOB orderbooks.
 
-Each snapshot is written to `books.jsonl`. The simulator generates paper maker quotes into `quotes.jsonl` only after risk checks pass. Entry bid records include the selected paper-only quote mode, expiry seconds, source book event, and placement context. Inventory exit ask records also include `exit_context` with the average entry price, configured minimum profit target, available inventory, and expected profit per share. Supported quote modes are `best_bid`, `one_tick_inside`, and `midpoint_when_spread_allows`; all remain maker-only.
+Each snapshot is written to `books.jsonl`. The simulator generates paper maker quotes into `quotes.jsonl` only after risk checks pass. Entry bid records include the selected paper-only quote mode, expiry seconds, source book event, and placement context. Runs may load prior `dashboard_state.json` market suitability and suppress new bid entries for markets classified `risky_concentrated` or `too_adverse`. Inventory exit ask records also include `exit_context` with the average entry price, configured minimum profit target, available inventory, and expected profit per share. Supported quote modes are `best_bid`, `one_tick_inside`, and `midpoint_when_spread_allows`; all remain maker-only.
 
-Fills are written to `fills.jsonl` only when a later book event makes the virtual quote plausibly fillable. Paper-only per-market and per-token fill caps are enforced for entry bid fills before exposure changes. Exit ask fills must have held inventory but are not blocked by entry concentration caps, because they reduce open inventory. Denied fills keep the same cited market-data evidence as simulated fills. Risk stops, quote cancellations, fetch failures, observation mode, public trade-evidence status, and run start/complete events go to `risk_events.jsonl`.
+Fills are written to `fills.jsonl` only when a later book event makes the virtual quote plausibly fillable. Paper-only per-market and per-token fill caps are enforced for entry bid fills before exposure changes. Prior-replay entry gates block only new bid entries; exit ask quotes and fills must still be allowed when held inventory exists, because exits reduce open inventory. Denied fills keep the same cited market-data evidence as simulated fills. Risk stops, quote cancellations, fetch failures, observation mode, entry-gating status, public trade-evidence status, and run start/complete events go to `risk_events.jsonl`.
 
 If fewer than three markets pass filters, the run enters observation mode instead of relaxing filters.
 
@@ -58,6 +58,7 @@ The dashboard is local and read-only. It displays market names, outcomes, public
 - Every selected market must pass explicit filters before quoting.
 - Every simulated fill must cite an evidence event ID from the market-data log.
 - Paper entry fill concentration caps must remain runtime risk controls only; they do not imply any live order or account capability.
+- Prior-replay entry gates may block bid entries on unsuitable markets, but they must not block inventory-reducing exits.
 - Inventory exit asks reduce paper inventory and must not be blocked by entry concentration caps.
 - Realized round-trip PnL requires matched bid-entry and ask-exit fills with evidence IDs.
 - Mark-to-mid PnL remains diagnostic and separate from realized round-trip PnL.

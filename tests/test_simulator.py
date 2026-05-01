@@ -185,6 +185,39 @@ class SimulatorTrustTests(unittest.TestCase):
         self.assertEqual(exit_fills[0]["reason"], "book_bid_traded_through_ask")
         self.assertEqual(exit_fills[0]["evidence_event_id"], "book-exit-fill")
 
+    def test_prior_replay_entry_gate_blocks_bid_but_allows_inventory_exit(self):
+        risk = RiskState(max_total_exposure=100)
+        risk.record_fill("m1", "yes", "bid", price=0.5, size=5)
+        sim = PaperSimulator(
+            risk=risk,
+            quote_size=5,
+            quote_expiry_seconds=60,
+            min_exit_profit_ticks=1,
+            entry_blocked_markets={"m1": "risky_concentrated"},
+        )
+
+        quotes = sim.generate_quotes(
+            snapshot(event_id="book-gated", best_bid=0.51, best_ask=0.54, midpoint=0.525, spread=0.03),
+            now=NOW,
+        )
+
+        self.assertEqual([quote for quote in quotes if quote["side"] == "bid"], [])
+        asks = [quote for quote in quotes if quote["side"] == "ask"]
+        self.assertEqual(len(asks), 1)
+        self.assertEqual(asks[0]["reason"], "paper_maker_inventory_exit_one_tick_inside")
+        self.assertEqual(asks[0]["exit_context"]["min_exit_price"], 0.51)
+
+    def test_prior_replay_entry_gate_blocks_empty_inventory_market(self):
+        sim = PaperSimulator(
+            risk=RiskState(max_total_exposure=100),
+            quote_size=5,
+            entry_blocked_markets={"m1": "too_adverse"},
+        )
+
+        quotes = sim.generate_quotes(snapshot(event_id="book-gated"), now=NOW)
+
+        self.assertEqual(quotes, [])
+
     def test_quote_policy_variants_choose_distinct_maker_prices(self):
         wide = snapshot(best_bid=0.49, best_ask=0.53, midpoint=0.51, spread=0.04)
 

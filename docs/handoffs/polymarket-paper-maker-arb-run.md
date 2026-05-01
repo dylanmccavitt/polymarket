@@ -4,7 +4,7 @@
 
 Implemented the first usable paper-only Polymarket system in `/Users/dylanmccavitt/polymarket` on branch `paper-maker-arb-run`.
 
-The repo is now a local git repository. The original docs were committed first on `main`, then this work continued on a dedicated branch. No git remote is configured, so PR creation is blocked on adding a remote.
+The repo is now a local git repository with private GitHub remote `origin` at `https://github.com/DylanMcCavitt/polymarket.git`. The original docs were committed first on `main`, then this work continued on dedicated branch `paper-maker-arb-run`. Draft PR: `https://github.com/DylanMcCavitt/polymarket/pull/1`.
 
 Implemented:
 
@@ -24,6 +24,7 @@ Implemented:
 - Fill-opportunity analysis in `summary.md`, `dashboard_state.json`, and the local dashboard.
 - Paper-only quote modes: `best_bid`, `one_tick_inside`, and `midpoint_when_spread_allows`.
 - Configurable paper quote expiry via `--quote-expiry-seconds`.
+- Prior-replay entry gating via `--entry-gating-data-dir`, blocking new bid entries on markets classified `risky_concentrated` or `too_adverse`.
 - Strategy comparison report over the same placement/book evidence, without profitability claims.
 - Architecture doc at `docs/architecture.md`.
 
@@ -31,19 +32,18 @@ Important environment note: this machine has `python3`, but no `python` shim. Co
 
 ## Next
 
-Review the 30-minute expiry-60 dashboard at `http://127.0.0.1:8767` and `data/runs/2026-05-01-expiry60/summary.md`.
+Review the entry-gated dashboard at `http://127.0.0.1:8770` and `data/runs/2026-05-01-entry-gated-v1/summary.md`.
 
 Recommended next implementation slice:
 
-1. Add per-market and per-outcome concentration controls before running longer sessions; the expiry-60 run concentrated 41 of 46 fills in two markets.
-2. Tighten adverse-selection accounting and market suitability scoring before making quotes more aggressive.
-3. Decide whether public trade-tape polling is worth adding as optional read-only evidence; current runs deliberately use book-move evidence only.
-
-Do not loosen fill rules just to create activity. The no-fill outcome is useful evidence when the report explains missed ticks, quote lifetime, market movement, and expiry sensitivity.
+1. Add a same-run suitability brake so markets that become `risky_concentrated` or `too_adverse` during the active run stop receiving new bid entries without waiting for the next replay.
+2. Keep inventory-reducing exits enabled on gated markets.
+3. Preserve the current prior-replay entry gate and use `data/runs/2026-05-01-entry-gated-v1` as the next prior-state source.
+4. Do not loosen quote placement or lower the exit profit target until open inventory and stuck lots improve.
 
 ## Risks
 
-- No remote is configured; PR creation and push are blocked until a remote is added.
+- Private remote is configured and `main` plus `paper-maker-arb-run` were pushed to `origin`.
 - Run data is intentionally ignored by git under `data/runs/`.
 - The run used polling mode. WebSocket support remains a later optimization.
 - Public trade/event evidence was not integrated in this slice; the runner logs `public_trade_evidence_status` with `book_move_only` so reports do not pretend trade tape evidence exists.
@@ -76,6 +76,7 @@ Do not loosen fill rules just to create activity. The no-fill outcome is useful 
 - `tests/test_arbitrage.py`
 - `tests/test_filters.py`
 - `tests/test_replay_dashboard.py`
+- `tests/test_entry_gating.py`
 - `tests/test_simulator.py`
 
 Run outputs, ignored by git:
@@ -531,3 +532,120 @@ Next strategy change:
 - Do not lower the exit profit target or increase quote aggressiveness yet.
 - Add entry gating from prior replay evidence: block new entries on markets classified `risky_concentrated` or `too_adverse`, while still allowing inventory-reducing exits.
 - Keep exit asks enabled and retest with the same 30-minute window after candidate-only entry gating; if exits remain profitable but fill-to-flip stays low, test shorter quote expiry before any more aggressive placement.
+
+## Entry-Gated V1 Implementation Checkpoint
+
+Status:
+
+- Created private GitHub remote `DylanMcCavitt/polymarket` and pushed `main` plus `paper-maker-arb-run`.
+- Opened draft PR `https://github.com/DylanMcCavitt/polymarket/pull/1`.
+- Added `--entry-gating-data-dir` to `run`.
+- Added prior-replay suitability loading from `dashboard_state.json`, falling back to JSONL replay when needed.
+- The gate blocks new bid entries for markets classified `risky_concentrated` or `too_adverse`.
+- Inventory-reducing ask exits remain allowed on gated markets.
+- Run start and `entry_gating_status` events record the source data dir, blocked classifications, and blocked market map.
+
+Checks:
+
+- `python3 -m unittest tests.test_simulator.SimulatorTrustTests.test_prior_replay_entry_gate_blocks_bid_but_allows_inventory_exit tests.test_simulator.SimulatorTrustTests.test_prior_replay_entry_gate_blocks_empty_inventory_market tests.test_entry_gating.EntryGatingTests.test_loads_blocked_markets_from_prior_dashboard_state`: failed before implementation, then passed.
+- `python3 -m polymarket_paper run --help`: passed and includes `--entry-gating-data-dir`.
+- `python3 -m unittest tests.test_simulator tests.test_entry_gating`: passed.
+- `make lint typecheck test`: passed; guardrail scan passed and 31 tests passed.
+- `python3 -m polymarket_paper.guardrails`: passed.
+
+## Entry-Gated V1 Run
+
+Run command:
+
+`python3 -m polymarket_paper run --minutes 30 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --quote-mode one_tick_inside --quote-expiry-seconds 60 --max-fills-per-market 8 --max-fills-per-token 4 --min-exit-profit-ticks 1 --stuck-inventory-minutes 20 --entry-gating-data-dir data/runs/2026-05-01-exit-v1 --out-dir data/runs/2026-05-01-entry-gated-v1 --poll-seconds 30`
+
+Report command:
+
+`python3 -m polymarket_paper report --date 2026-05-01 --data-dir data/runs/2026-05-01-entry-gated-v1 --dashboard-url http://127.0.0.1:8770`
+
+Dashboard:
+
+- URL: `http://127.0.0.1:8770`
+- `/state.json` verification passed with `status == completed`, `round_trip_pnl`, `fill_quality`, and completed counts.
+- Dashboard HTML includes `Polymarket Paper Desk`, `Round Trip PnL`, `Open Inventory`, and `Market Suitability`.
+
+Entry gate verification:
+
+- Prior source: `data/runs/2026-05-01-exit-v1`.
+- Blocked markets loaded: `2090808` and `2128129`, both `risky_concentrated`.
+- Direct JSONL check found `0` bid quotes in blocked prior markets.
+- Direct JSONL check found `0` simulated fills in blocked prior markets.
+
+Counts:
+
+- Markets total: 100.
+- Markets watched: 16.
+- Markets skipped: 84.
+- Book events: 1,060.
+- Virtual quotes: 955.
+- Simulated fills: 51.
+- Denied fills: 41.
+- Risk events: 868.
+- Arbitrage alerts: 0.
+- Mark-to-mid PnL: -1.725.
+- Spread-capture PnL: 1.391667.
+- Inventory mark PnL: -3.116667.
+
+Round-trip PnL:
+
+- Entry fills: 39.
+- Exit fills: 12.
+- Round trips: 12.
+- Realized round-trip PnL: 1.3.
+- Average profit per share: 0.021667.
+- Average hold seconds: 567.810568.
+- Fill-to-flip rate: 0.307692.
+- Open inventory size: 135.0.
+- Open inventory lots: 27.
+- Stuck inventory lots: 12.
+- Oldest open seconds: 1762.931878.
+- Unmatched exit size: 0.0.
+
+Fill quality:
+
+- Fills analyzed: 51.
+- Adverse-selection flags: 21.
+- Missing markouts: 3.
+- 30s average markout: -0.00951, adverse count 13, sample count 51.
+- 60s average markout: -0.0042, adverse count 11, sample count 50.
+- 120s average markout: -0.000918, adverse count 8, sample count 49.
+
+Market suitability:
+
+- `2077451`: risky_concentrated, 13 fills, fill share 0.254902, 4 adverse flags.
+- `2128120`: risky_concentrated, 12 fills, fill share 0.235294, 8 adverse flags.
+- `2128134`: risky_concentrated, 11 fills, fill share 0.215686, 3 adverse flags.
+- `2129025`: candidate, 8 fills, fill share 0.156863, 3 adverse flags.
+- `2129021`: too_adverse, 6 fills, fill share 0.117647, 3 adverse flags.
+
+Comparison against `2026-05-01-exit-v1`:
+
+- Exit-v1: 23 fills, 6 exits, 6 round trips, realized round-trip PnL 1.05, fill-to-flip rate 0.352941, open inventory 55.0, stuck lots 8, top two markets 22 / 23, mark-to-mid PnL -0.805.
+- Entry-gated-v1: 51 fills, 12 exits, 12 round trips, realized round-trip PnL 1.3, fill-to-flip rate 0.307692, open inventory 135.0, stuck lots 12, top two markets 25 / 51, mark-to-mid PnL -1.725.
+- Prior bad-market repeat was fixed: old blocked markets had no bid quotes or fills.
+- Concentration improved by share but not by absolute risk; new markets became `risky_concentrated` during the same run.
+- Realized exits improved in count and total PnL, but open inventory and stuck lots worsened.
+- Adverse-selection flags rose in count but fell by rate: 15 / 23 in exit-v1 versus 21 / 51 in entry-gated-v1.
+
+What worked:
+
+- Prior replay gating prevented re-entering the two known bad markets.
+- Exit asks still fired under the gate.
+- Report/dashboard parity stayed intact through `build_run_state`.
+
+What did not work:
+
+- A static prior blocklist is too slow; new concentration emerged in `2077451`, `2128120`, and `2128134`.
+- Open inventory and stuck lots worsened despite positive realized round-trip PnL.
+- Mark-to-mid PnL remained negative and got worse versus exit-v1.
+
+Next strategy change:
+
+- Add same-run suitability gating from live replay state or runtime counters so a market that crosses concentration/adverse thresholds stops receiving new bid entries immediately.
+- Keep inventory-reducing exits enabled on those same-run gated markets.
+- Do not lower the exit profit target or increase quote aggressiveness until open inventory and stuck lots improve.
