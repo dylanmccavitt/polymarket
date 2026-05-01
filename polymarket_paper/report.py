@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 import math
-from collections import Counter, defaultdict
-from datetime import timedelta
+from collections import Counter, defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -747,6 +747,176 @@ def _compute_pnl(fills: list[dict[str, Any]], books: list[dict[str, Any]]) -> di
     }
 
 
+def _latest_timestamp(rows: list[dict[str, Any]]) -> datetime | None:
+    timestamps = [parsed for parsed in (parse_dt(row.get("timestamp")) for row in rows) if parsed is not None]
+    return max(timestamps) if timestamps else None
+
+
+def _run_end_time(
+    fills: list[dict[str, Any]],
+    risk_events: list[dict[str, Any]],
+    books: list[dict[str, Any]],
+) -> datetime | None:
+    completed = [
+        parsed
+        for parsed in (parse_dt(row.get("timestamp")) for row in risk_events if row.get("type") == "run_completed")
+        if parsed is not None
+    ]
+    if completed:
+        return max(completed)
+    return _latest_timestamp(fills + risk_events + books)
+
+
+def _stuck_inventory_minutes(risk_events: list[dict[str, Any]]) -> float:
+    for event in reversed(risk_events):
+        if event.get("type") != "run_started":
+            continue
+        try:
+            return float(event.get("stuck_inventory_minutes"))
+        except (TypeError, ValueError):
+            return 20.0
+    return 20.0
+
+
+def _round_trip_replay(
+    fills: list[dict[str, Any]],
+    risk_events: list[dict[str, Any]],
+    books: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    sorted_fills = sorted(
+        [fill for fill in fills if fill.get("type") == "simulated_fill"],
+        key=lambda row: parse_dt(row.get("timestamp")) or datetime.min.replace(tzinfo=timezone.utc),
+    )
+    open_by_token: dict[tuple[str, str], deque[dict[str, Any]]] = defaultdict(deque)
+    round_trips: list[dict[str, Any]] = []
+    unmatched_exit_size = 0.0
+    entry_fill_count = 0
+    exit_fill_count = 0
+    entry_size = 0.0
+    exit_size = 0.0
+    realized_pnl = 0.0
+    matched_exit_size = 0.0
+    hold_seconds: list[float] = []
+
+    for fill in sorted_fills:
+        market_id = str(fill.get("market_id") or "")
+        token_id = str(fill.get("token_id") or "")
+        key = (market_id, token_id)
+        side = fill.get("side")
+        price = float(fill.get("price") or 0.0)
+        size = float(fill.get("size") or 0.0)
+        if side == "bid":
+            entry_fill_count += 1
+            entry_size += size
+            open_by_token[key].append(
+                {
+                    "market_id": market_id,
+                    "token_id": token_id,
+                    "entry_quote_id": fill.get("quote_id"),
+                    "entry_timestamp": fill.get("timestamp"),
+                    "entry_price": price,
+                    "open_size": size,
+                    "entry_evidence_event_id": fill.get("evidence_event_id"),
+                }
+            )
+            continue
+        if side != "ask":
+            continue
+        exit_fill_count += 1
+        exit_size += size
+        remaining = size
+        while remaining > 1e-9 and open_by_token[key]:
+            lot = open_by_token[key][0]
+            matched_size = min(float(lot.get("open_size") or 0.0), remaining)
+            if matched_size <= 1e-9:
+                open_by_token[key].popleft()
+                continue
+            entry_price = float(lot.get("entry_price") or 0.0)
+            pnl = round((price - entry_price) * matched_size, 6)
+            entry_time = parse_dt(lot.get("entry_timestamp"))
+            exit_time = parse_dt(fill.get("timestamp"))
+            hold = round((exit_time - entry_time).total_seconds(), 6) if entry_time and exit_time else None
+            if hold is not None:
+                hold_seconds.append(hold)
+            round_trips.append(
+                {
+                    "market_id": market_id,
+                    "token_id": token_id,
+                    "entry_quote_id": lot.get("entry_quote_id"),
+                    "exit_quote_id": fill.get("quote_id"),
+                    "entry_timestamp": lot.get("entry_timestamp"),
+                    "exit_timestamp": fill.get("timestamp"),
+                    "entry_price": round(entry_price, 6),
+                    "exit_price": round(price, 6),
+                    "size": round(matched_size, 6),
+                    "realized_pnl": pnl,
+                    "profit_per_share": round(price - entry_price, 6),
+                    "hold_seconds": hold,
+                    "entry_evidence_event_id": lot.get("entry_evidence_event_id"),
+                    "exit_evidence_event_id": fill.get("evidence_event_id"),
+                }
+            )
+            realized_pnl += pnl
+            matched_exit_size += matched_size
+            lot["open_size"] = round(float(lot.get("open_size") or 0.0) - matched_size, 6)
+            remaining = round(remaining - matched_size, 6)
+            if float(lot.get("open_size") or 0.0) <= 1e-9:
+                open_by_token[key].popleft()
+        if remaining > 1e-9:
+            unmatched_exit_size += remaining
+
+    end_time = _run_end_time(sorted_fills, risk_events, books or [])
+    stuck_seconds = _stuck_inventory_minutes(risk_events) * 60
+    open_lots: list[dict[str, Any]] = []
+    for lots in open_by_token.values():
+        for lot in lots:
+            open_size = float(lot.get("open_size") or 0.0)
+            if open_size <= 1e-9:
+                continue
+            entry_time = parse_dt(lot.get("entry_timestamp"))
+            age = round((end_time - entry_time).total_seconds(), 6) if end_time and entry_time else None
+            status = "stuck" if age is not None and age >= stuck_seconds else "open"
+            open_lots.append(
+                {
+                    "market_id": lot.get("market_id"),
+                    "token_id": lot.get("token_id"),
+                    "entry_quote_id": lot.get("entry_quote_id"),
+                    "entry_timestamp": lot.get("entry_timestamp"),
+                    "entry_price": round(float(lot.get("entry_price") or 0.0), 6),
+                    "open_size": round(open_size, 6),
+                    "age_seconds": age,
+                    "status": status,
+                    "entry_evidence_event_id": lot.get("entry_evidence_event_id"),
+                }
+            )
+
+    open_inventory_size = round(sum(float(lot.get("open_size") or 0.0) for lot in open_lots), 6)
+    average_profit = round(realized_pnl / matched_exit_size, 6) if matched_exit_size else 0.0
+    return {
+        "summary": {
+            "entry_fill_count": entry_fill_count,
+            "exit_fill_count": exit_fill_count,
+            "round_trip_count": len(round_trips),
+            "entry_size": round(entry_size, 6),
+            "exit_size": round(exit_size, 6),
+            "realized_pnl": round(realized_pnl, 6),
+            "average_profit_per_share": average_profit,
+            "average_hold_seconds": round(sum(hold_seconds) / len(hold_seconds), 6) if hold_seconds else None,
+            "fill_to_flip_rate": round(matched_exit_size / entry_size, 6) if entry_size else 0.0,
+            "open_inventory_size": open_inventory_size,
+            "open_inventory_lots": len(open_lots),
+            "stuck_inventory_lots": sum(1 for lot in open_lots if lot.get("status") == "stuck"),
+            "oldest_open_seconds": max(
+                (float(lot["age_seconds"]) for lot in open_lots if lot.get("age_seconds") is not None),
+                default=None,
+            ),
+            "unmatched_exit_size": round(unmatched_exit_size, 6),
+        },
+        "round_trips": round_trips,
+        "open_inventory_lots": open_lots,
+    }
+
+
 def build_run_state(data_dir: Path) -> dict[str, Any]:
     markets = read_jsonl(data_dir / "markets.jsonl")
     books = read_jsonl(data_dir / "books.jsonl")
@@ -769,6 +939,7 @@ def build_run_state(data_dir: Path) -> dict[str, Any]:
     fill_opportunity = _fill_opportunity_analysis(quote_lifecycle, books, risk_events, policy_comparison)
     fill_markouts = _fill_markout_rows(fill_rows, books)
     fill_quality = _fill_quality_from_markouts(fill_markouts)
+    round_trip_replay = _round_trip_replay(fill_rows, risk_events, books)
     market_suitability = _market_suitability(
         watched_markets,
         quotes,
@@ -842,6 +1013,9 @@ def build_run_state(data_dir: Path) -> dict[str, Any]:
         "quote_lifecycle": quote_lifecycle,
         "fill_opportunity": fill_opportunity,
         "fill_quality": fill_quality,
+        "round_trip_pnl": round_trip_replay["summary"],
+        "round_trips": round_trip_replay["round_trips"][-50:],
+        "open_inventory_lots": round_trip_replay["open_inventory_lots"],
         "market_suitability": market_suitability,
         "policy_comparison": policy_comparison,
         "arb_alerts": [row for row in arb_alerts if row.get("is_alert")],

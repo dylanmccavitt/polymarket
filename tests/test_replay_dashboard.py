@@ -123,6 +123,119 @@ class ReplayDashboardParityTests(unittest.TestCase):
 
             self.assertEqual(state["status"], "active_or_partial")
 
+    def test_round_trip_replay_reports_realized_exit_pnl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = ensure_run_dir(Path(tmp))
+            append_jsonl(run_dir / "risk_events.jsonl", {"type": "run_started", "timestamp": "2026-05-01T12:00:00+00:00"})
+            append_jsonl(
+                run_dir / "markets.jsonl",
+                {
+                    "type": "market_filter",
+                    "selected": True,
+                    "normalized": {
+                        "market_id": "m1",
+                        "question": "Round trip fixture?",
+                        "slug": "round-trip-fixture",
+                        "token_ids": ["yes"],
+                        "outcomes": ["Yes"],
+                    },
+                },
+            )
+            append_jsonl(
+                run_dir / "fills.jsonl",
+                {
+                    "type": "simulated_fill",
+                    "quote_id": "entry-q",
+                    "timestamp": "2026-05-01T12:00:00+00:00",
+                    "market_id": "m1",
+                    "token_id": "yes",
+                    "side": "bid",
+                    "price": 0.50,
+                    "size": 5,
+                    "evidence_event_id": "book-entry",
+                },
+            )
+            append_jsonl(
+                run_dir / "fills.jsonl",
+                {
+                    "type": "simulated_fill",
+                    "quote_id": "exit-q",
+                    "timestamp": "2026-05-01T12:03:00+00:00",
+                    "market_id": "m1",
+                    "token_id": "yes",
+                    "side": "ask",
+                    "price": 0.53,
+                    "size": 5,
+                    "evidence_event_id": "book-exit",
+                },
+            )
+
+            state = build_run_state(run_dir)
+            round_trip = state["round_trip_pnl"]
+
+            self.assertEqual(round_trip["entry_fill_count"], 1)
+            self.assertEqual(round_trip["exit_fill_count"], 1)
+            self.assertEqual(round_trip["round_trip_count"], 1)
+            self.assertEqual(round_trip["realized_pnl"], 0.15)
+            self.assertEqual(round_trip["average_profit_per_share"], 0.03)
+            self.assertEqual(round_trip["average_hold_seconds"], 180.0)
+            self.assertEqual(round_trip["fill_to_flip_rate"], 1.0)
+            self.assertEqual(round_trip["open_inventory_size"], 0.0)
+            self.assertEqual(state["round_trips"][0]["entry_evidence_event_id"], "book-entry")
+            self.assertEqual(state["round_trips"][0]["exit_evidence_event_id"], "book-exit")
+
+    def test_round_trip_replay_reports_stuck_open_inventory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = ensure_run_dir(Path(tmp))
+            append_jsonl(
+                run_dir / "risk_events.jsonl",
+                {
+                    "type": "run_started",
+                    "timestamp": "2026-05-01T12:00:00+00:00",
+                    "stuck_inventory_minutes": 20,
+                },
+            )
+            append_jsonl(run_dir / "risk_events.jsonl", {"type": "run_completed", "timestamp": "2026-05-01T12:45:00+00:00"})
+            append_jsonl(
+                run_dir / "markets.jsonl",
+                {
+                    "type": "market_filter",
+                    "selected": True,
+                    "normalized": {
+                        "market_id": "m1",
+                        "question": "Stuck fixture?",
+                        "slug": "stuck-fixture",
+                        "token_ids": ["yes"],
+                        "outcomes": ["Yes"],
+                    },
+                },
+            )
+            append_jsonl(
+                run_dir / "fills.jsonl",
+                {
+                    "type": "simulated_fill",
+                    "quote_id": "entry-q",
+                    "timestamp": "2026-05-01T12:00:00+00:00",
+                    "market_id": "m1",
+                    "token_id": "yes",
+                    "side": "bid",
+                    "price": 0.50,
+                    "size": 5,
+                    "evidence_event_id": "book-entry",
+                },
+            )
+
+            state = build_run_state(run_dir)
+            round_trip = state["round_trip_pnl"]
+
+            self.assertEqual(round_trip["entry_fill_count"], 1)
+            self.assertEqual(round_trip["exit_fill_count"], 0)
+            self.assertEqual(round_trip["open_inventory_size"], 5.0)
+            self.assertEqual(round_trip["open_inventory_lots"], 1)
+            self.assertEqual(round_trip["stuck_inventory_lots"], 1)
+            self.assertEqual(round_trip["oldest_open_seconds"], 2700.0)
+            self.assertEqual(state["open_inventory_lots"][0]["status"], "stuck")
+
     def test_quote_lifecycle_replays_missed_tick_and_longer_expiry_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = ensure_run_dir(Path(tmp))
