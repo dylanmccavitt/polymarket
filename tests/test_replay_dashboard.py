@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from polymarket_paper.dashboard import INDEX_HTML
 from polymarket_paper.journal import append_jsonl, ensure_run_dir
 from polymarket_paper.report import build_run_state, generate_report
 
@@ -582,6 +583,49 @@ class ReplayDashboardParityTests(unittest.TestCase):
 
             self.assertEqual(suitability["m-concentrated"]["classification"], "risky_concentrated")
             self.assertEqual(suitability["m-balanced"]["classification"], "candidate")
+
+    def test_same_run_gate_state_replays_into_report_and_dashboard(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = ensure_run_dir(Path(tmp))
+            append_jsonl(
+                run_dir / "risk_events.jsonl",
+                {
+                    "type": "same_run_entry_gate",
+                    "timestamp": "2026-05-01T12:05:00+00:00",
+                    "market_id": "m-gated",
+                    "token_id": "yes",
+                    "outcome": "Yes",
+                    "classification": "risky_concentrated",
+                    "reason": "entry_fill_count_reached_market_cap",
+                    "threshold": "entry_fill_count_at_market_cap",
+                    "source_evidence_event_id": "book-fill-1",
+                    "details": {"entry_fill_count": 8, "market_fill_cap": 8},
+                },
+            )
+
+            state = generate_report(run_dir, dashboard_url="http://127.0.0.1:8771")
+
+            self.assertEqual(
+                state["same_run_entry_gates"],
+                [
+                    {
+                        "timestamp": "2026-05-01T12:05:00+00:00",
+                        "market_id": "m-gated",
+                        "token_id": "yes",
+                        "outcome": "Yes",
+                        "classification": "risky_concentrated",
+                        "reason": "entry_fill_count_reached_market_cap",
+                        "threshold": "entry_fill_count_at_market_cap",
+                        "source_evidence_event_id": "book-fill-1",
+                        "details": {"entry_fill_count": 8, "market_fill_cap": 8},
+                    }
+                ],
+            )
+            summary = (run_dir / "summary.md").read_text(encoding="utf-8")
+            self.assertIn("## Same-Run Entry Gates", summary)
+            self.assertIn("m-gated: classification=risky_concentrated", summary)
+            self.assertIn("source_evidence=book-fill-1", summary)
+            self.assertIn("Same-Run Entry Gates", INDEX_HTML)
 
 
 if __name__ == "__main__":

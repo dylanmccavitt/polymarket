@@ -179,6 +179,13 @@ INDEX_HTML = """<!doctype html>
           </table>
         </div>
         <div class="panel">
+          <div class="panel-head"><div class="label">Same-Run Entry Gates</div></div>
+          <table>
+            <thead><tr><th>Market</th><th>Class</th><th>Threshold</th><th>Evidence</th></tr></thead>
+            <tbody id="same-run-gates"></tbody>
+          </table>
+        </div>
+        <div class="panel">
           <div class="panel-head"><div class="label">Policy Comparison</div></div>
           <table><tbody id="policy"></tbody></table>
         </div>
@@ -214,7 +221,7 @@ INDEX_HTML = """<!doctype html>
       if (value === null || value === undefined || value === '') return '—';
       const n = Number(value);
       if (!Number.isFinite(n)) return esc(value);
-      return n.toFixed(3).replace(/0+$/,'').replace(/\.$/,'');
+      return n.toFixed(3).replace(/0+$/,'').replace(/\\.$/,'');
     }
     function compact(value) {
       const n = Number(value || 0);
@@ -311,6 +318,13 @@ INDEX_HTML = """<!doctype html>
         return `<tr>${td(`<code>${esc(row.market_id)}</code><div class="subtle">${esc(row.reason || '')}</div>`)}${td(esc(row.classification))}${td(fmt(row.fill_count))}${td(fmt(row.fill_share))}${td(fmt(row.adverse_selection_flags))}</tr>`;
       }).join('') || '<tr><td colspan="5" class="subtle">No watched markets.</td></tr>';
     }
+    function sameRunGateRows(gates) {
+      return (gates || []).map(row => {
+        const market = `<code>${esc(row.market_id)}</code><div class="subtle">${esc(row.token_id || '')} ${esc(row.outcome || '')}</div>`;
+        const reason = `${esc(row.threshold || '')}<div class="subtle">${esc(row.reason || '')}</div>`;
+        return `<tr>${td(market)}${td(esc(row.classification))}${td(reason)}${td(`<code>${esc(row.source_evidence_event_id || '')}</code>`)}</tr>`;
+      }).join('') || '<tr><td colspan="4" class="subtle">No same-run gates.</td></tr>';
+    }
     function policyRows(comparison) {
       const modes = comparison?.modes || {};
       const entries = Object.entries(modes).sort().map(([mode, values]) => {
@@ -378,6 +392,7 @@ INDEX_HTML = """<!doctype html>
       document.getElementById('opportunity').innerHTML = opportunityRows(state.fill_opportunity);
       document.getElementById('quality').innerHTML = fillQualityRows(state.fill_quality);
       document.getElementById('suitability').innerHTML = suitabilityRows(state.market_suitability);
+      document.getElementById('same-run-gates').innerHTML = sameRunGateRows(state.same_run_entry_gates);
       document.getElementById('policy').innerHTML = policyRows(state.policy_comparison);
       document.getElementById('skips').innerHTML = rows(state.skipped_counts);
       document.getElementById('books').innerHTML = Object.values(state.latest_books || {}).slice(-40).map(b => {

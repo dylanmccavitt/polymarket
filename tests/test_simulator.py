@@ -99,15 +99,14 @@ class SimulatorTrustTests(unittest.TestCase):
         )
         self.assertEqual(fills[0]["type"], "simulated_fill")
 
-        sim.generate_quotes(snapshot(event_id="book-2"), now=NOW + timedelta(seconds=6))
-        denied, _ = sim.process_snapshot(
+        quotes = sim.generate_quotes(snapshot(event_id="book-2"), now=NOW + timedelta(seconds=6))
+        fills_after_gate, _ = sim.process_snapshot(
             snapshot(event_id="book-fill-2", best_bid=0.49, best_ask=0.5, midpoint=0.495, spread=0.01),
             now=NOW + timedelta(seconds=10),
         )
 
-        self.assertEqual(denied[0]["type"], "fill_denied")
-        self.assertEqual(denied[0]["reason"], "market_fill_cap")
-        self.assertEqual(denied[0]["evidence_event_id"], "book-fill-2")
+        self.assertEqual([quote for quote in quotes if quote["side"] == "bid"], [])
+        self.assertEqual(fills_after_gate, [])
 
     def test_token_fill_cap_denies_additional_outcome_fills(self):
         risk = RiskState(max_total_exposure=100, max_market_fills=10, max_token_fills=1)
@@ -217,6 +216,100 @@ class SimulatorTrustTests(unittest.TestCase):
         quotes = sim.generate_quotes(snapshot(event_id="book-gated"), now=NOW)
 
         self.assertEqual(quotes, [])
+
+    def test_same_run_concentration_gate_blocks_new_bid_entries(self):
+        risk = RiskState(max_total_exposure=100, max_market_fills=1, max_token_fills=10)
+        sim = PaperSimulator(risk=risk, quote_size=5, quote_expiry_seconds=60)
+
+        sim.generate_quotes(snapshot(event_id="book-1"), now=NOW)
+        fills, risk_events = sim.process_snapshot(
+            snapshot(event_id="book-fill-1", best_bid=0.49, best_ask=0.5, midpoint=0.495, spread=0.01),
+            now=NOW + timedelta(seconds=5),
+        )
+        self.assertEqual(fills[0]["type"], "simulated_fill")
+
+        gate_events = [event for event in risk_events if event["type"] == "same_run_entry_gate"]
+        self.assertEqual(len(gate_events), 1)
+        self.assertEqual(gate_events[0]["market_id"], "m1")
+        self.assertEqual(gate_events[0]["token_id"], "yes")
+        self.assertEqual(gate_events[0]["outcome"], "Yes")
+        self.assertEqual(gate_events[0]["classification"], "risky_concentrated")
+        self.assertEqual(gate_events[0]["threshold"], "entry_fill_count_at_market_cap")
+        self.assertEqual(gate_events[0]["source_evidence_event_id"], "book-fill-1")
+
+        quotes = sim.generate_quotes(
+            snapshot(event_id="book-after-gate", best_bid=0.49, best_ask=0.51, midpoint=0.5, spread=0.02),
+            now=NOW + timedelta(seconds=6),
+        )
+
+        self.assertEqual([quote for quote in quotes if quote["side"] == "bid"], [])
+
+    def test_same_run_gate_keeps_inventory_exit_quote_and_fill_enabled(self):
+        risk = RiskState(max_total_exposure=100, max_market_fills=1, max_token_fills=10)
+        sim = PaperSimulator(risk=risk, quote_size=5, quote_expiry_seconds=60, min_exit_profit_ticks=1)
+
+        sim.generate_quotes(snapshot(event_id="book-1"), now=NOW)
+        sim.process_snapshot(
+            snapshot(event_id="book-fill-1", best_bid=0.49, best_ask=0.5, midpoint=0.495, spread=0.01),
+            now=NOW + timedelta(seconds=5),
+        )
+
+        quotes = sim.generate_quotes(
+            snapshot(event_id="book-exit-quote", best_bid=0.51, best_ask=0.54, midpoint=0.525, spread=0.03),
+            now=NOW + timedelta(seconds=6),
+        )
+
+        self.assertEqual([quote for quote in quotes if quote["side"] == "bid"], [])
+        asks = [quote for quote in quotes if quote["side"] == "ask"]
+        self.assertEqual(len(asks), 1)
+
+        fills, risk_events = sim.process_snapshot(
+            snapshot(event_id="book-exit-fill", best_bid=0.53, best_ask=0.55, midpoint=0.54, spread=0.02),
+            now=NOW + timedelta(seconds=10),
+        )
+
+        exit_fills = [fill for fill in fills if fill["side"] == "ask"]
+        self.assertEqual(risk_events, [])
+        self.assertEqual(len(exit_fills), 1)
+        self.assertEqual(exit_fills[0]["type"], "simulated_fill")
+        self.assertEqual(exit_fills[0]["reason"], "book_bid_traded_through_ask")
+
+    def test_same_run_adverse_gate_blocks_new_bid_entries(self):
+        risk = RiskState(max_total_exposure=100, max_market_fills=10, max_token_fills=10)
+        sim = PaperSimulator(risk=risk, quote_size=5, quote_expiry_seconds=60)
+
+        sim.generate_quotes(snapshot(event_id="book-1"), now=NOW)
+        fills, _ = sim.process_snapshot(
+            snapshot(event_id="book-fill-1", best_bid=0.49, best_ask=0.5, midpoint=0.495, spread=0.01),
+            now=NOW + timedelta(seconds=5),
+        )
+        self.assertEqual(fills[0]["type"], "simulated_fill")
+        risk.same_run_gate_quote_counts_by_market["m1"] = 20
+
+        _, risk_events = sim.process_snapshot(
+            snapshot(
+                event_id="book-adverse-1",
+                timestamp=(NOW + timedelta(seconds=36)).isoformat(),
+                best_bid=0.47,
+                best_ask=0.49,
+                midpoint=0.48,
+                spread=0.02,
+            ),
+            now=NOW + timedelta(seconds=36),
+        )
+
+        gate_events = [event for event in risk_events if event["type"] == "same_run_entry_gate"]
+        self.assertEqual(len(gate_events), 1)
+        self.assertEqual(gate_events[0]["classification"], "too_adverse")
+        self.assertEqual(gate_events[0]["threshold"], "adverse_selection_flags_at_least_half_of_entry_fills")
+        self.assertEqual(gate_events[0]["source_evidence_event_id"], "book-adverse-1")
+
+        quotes = sim.generate_quotes(
+            snapshot(event_id="book-after-adverse", best_bid=0.49, best_ask=0.51, midpoint=0.5, spread=0.02),
+            now=NOW + timedelta(seconds=37),
+        )
+
+        self.assertEqual([quote for quote in quotes if quote["side"] == "bid"], [])
 
     def test_quote_policy_variants_choose_distinct_maker_prices(self):
         wide = snapshot(best_bid=0.49, best_ask=0.53, midpoint=0.51, spread=0.04)

@@ -652,6 +652,105 @@ Next strategy change:
 - Keep inventory-reducing exits enabled on those same-run gated markets.
 - Do not lower the exit profit target or increase quote aggressiveness until open inventory and stuck lots improve.
 
+## Same-Run Entry Gate Implementation Checkpoint
+
+Status:
+
+- Added runtime same-run entry gate state to `RiskState`.
+- Same-run gates track evidence-backed entry fills, entry quote counts, and later midpoint markouts.
+- Markets now stop receiving new bid entries when they reach the configured entry fill cap, cross the same-run entry fill-share threshold after enough quotes, or cross the adverse-selection threshold.
+- Same-run gates journal `same_run_entry_gate` events with market ID, token/outcome, classification, threshold, reason, details, and source evidence.
+- Existing active bid quotes on same-run gated markets are cancelled with `reason=same_run_entry_gate`.
+- Inventory-reducing ask exits remain enabled on same-run gated markets.
+- Report and dashboard state now include `same_run_entry_gates`; the dashboard has a `Same-Run Entry Gates` panel.
+- Created follow-up `AGE-408` to calibrate same-run fill-share sample thresholds before longer sessions.
+
+Checks:
+
+- `python3 -m unittest tests.test_simulator.SimulatorTrustTests.test_same_run_concentration_gate_blocks_new_bid_entries tests.test_simulator.SimulatorTrustTests.test_same_run_gate_keeps_inventory_exit_quote_and_fill_enabled tests.test_simulator.SimulatorTrustTests.test_same_run_adverse_gate_blocks_new_bid_entries tests.test_replay_dashboard.ReplayDashboardParityTests.test_same_run_gate_state_replays_into_report_and_dashboard`: failed before implementation, then passed.
+- `python3 -m unittest tests.test_simulator tests.test_replay_dashboard tests.test_entry_gating`: passed.
+- `make test`: passed; 35 tests.
+- `make lint typecheck test`: passed; guardrail scan passed and 35 tests passed.
+- `python3 -m polymarket_paper.guardrails`: passed.
+
+## Same-Run Gated V1 Run
+
+Prior run source:
+
+- `data/runs/2026-05-01-entry-gated-v1`.
+- The issue worktree did not have ignored run data, so this prior run directory was copied from `/Users/dylanmccavitt/polymarket/data/runs/2026-05-01-entry-gated-v1` into the issue workspace before the run.
+
+Run command:
+
+`python3 -m polymarket_paper run --minutes 30 --max-markets 10 --max-virtual-exposure 100 --quote-size 5 --maker-only --quote-mode one_tick_inside --quote-expiry-seconds 60 --max-fills-per-market 8 --max-fills-per-token 4 --min-exit-profit-ticks 1 --stuck-inventory-minutes 20 --entry-gating-data-dir data/runs/2026-05-01-entry-gated-v1 --out-dir data/runs/2026-05-01-same-run-gated-v1 --poll-seconds 30`
+
+Report command:
+
+`python3 -m polymarket_paper report --date 2026-05-01 --data-dir data/runs/2026-05-01-same-run-gated-v1 --dashboard-url http://127.0.0.1:8771`
+
+Dashboard:
+
+- URL: `http://127.0.0.1:8771`.
+- `/state.json` verification passed with `status == completed`, counts present, `same_run_entry_gates == 3`, and risk count `same_run_entry_gate == 3`.
+- Dashboard HTML includes `Same-Run Entry Gates`.
+
+Counts:
+
+- Markets total: 100.
+- Markets watched: 7.
+- Markets skipped: 93.
+- Book events: 784.
+- Virtual quotes: 580.
+- Simulated fills: 5.
+- Denied fills: 0.
+- Risk events: 569.
+- Arbitrage alerts: 0.
+- Same-run entry gates: 3.
+- Mark-to-mid PnL: -0.0525.
+- Spread-capture PnL: 0.335.
+- Inventory mark PnL: -0.3875.
+
+Round-trip PnL:
+
+- Entry fills: 5.
+- Exit fills: 0.
+- Round trips: 0.
+- Realized round-trip PnL: 0.0.
+- Fill-to-flip rate: 0.0.
+- Open inventory size: 25.0.
+- Open inventory lots: 5.
+- Stuck inventory lots: 0.
+- Oldest open seconds: 1086.441282.
+
+Same-run gate verification:
+
+- `2074236`: `risky_concentrated`, threshold `entry_fill_share_above_35_percent`, source evidence `book:50695023145691301603922788825368914198264161400847524093421970663965842794854:1777673971480:29ef386b67f60c63a3a94e66a30fbf41793c0ec4`.
+- `2074235`: `risky_concentrated`, threshold `entry_fill_share_above_35_percent`, source evidence `book:73085410282156564609457156922456970649482289167747354596180378121571833671200:1777673966179:8979b1eb47449877c233f7c48b424f8b56628d98`.
+- `2074233`: `risky_concentrated`, threshold `entry_fill_share_above_35_percent`, source evidence `book:17238294662764195883464448241802068880380045382813699564876711751505804625212:1777674454057:99b0f9b36704acbe9eaf8a21db79fc3c34dc75bd`.
+- Direct JSONL assertion found `0` post-gate bid quotes for each same-run gated market.
+- Direct JSONL assertion found post-gate ask quotes still enabled where inventory existed: `2074236` had 13 post-gate ask quotes, `2074233` had 5 post-gate ask quotes, `2074235` had 0.
+- Direct JSONL assertion found `0` post-gate ask fills in this run.
+
+Prior gate verification:
+
+- Prior blocked markets loaded: `2077451`, `2128120`, `2128134`, and `2129021`.
+- Direct JSONL assertion found `0` bid quotes in prior blocked markets.
+- Direct JSONL assertion found `0` simulated fills in prior blocked markets.
+
+Comparison against `2026-05-01-entry-gated-v1`:
+
+- Entry-gated-v1: 51 fills, 39 entries, 12 exits, open inventory 135.0, open lots 27, stuck lots 12, mark-to-mid PnL -1.725, adverse-selection flags 21, top two markets 25 / 51 fills.
+- Same-run-gated-v1: 5 fills, 5 entries, 0 exits, open inventory 25.0, open lots 5, stuck lots 0, mark-to-mid PnL -0.0525, adverse-selection flags 0, top two markets 3 / 5 fills.
+- Prior blocked markets stayed clean in the fresh run.
+- Same-run gates stopped all later bid quotes on newly gated markets.
+- Absolute inventory, stuck lots, mark-to-mid PnL, and adverse flags improved sharply, but exit activity was absent because the run had only five entry fills.
+- Concentration share stayed high on a small sample, and the fill-share gate fired on one- and two-fill markets after enough quotes. This is now tracked as `AGE-408`.
+
+Next recommendation:
+
+- Move `AGE-398` to Human Review after PR checks are current.
+- Keep `AGE-399` as the next main track issue, but review `AGE-408` before any longer paper soak if the one-fill/two-fill fill-share gates look too conservative in the dashboard.
+
 ## Linear And Symphony Track Setup
 
 Status:
